@@ -105,13 +105,17 @@ def fetchEnums(enumsNode, typeNameRemap, enums):
     enum = SimpleNamespace()
     enum.name = enumsNode.attrib["name"]
     enum.node = enumsNode
-    enums.append[enum]
+    enum.members = []
+    enums.append(enum)
 
 def fetchCommands(commandsNode, typeNameRemap, commands):
     pass
 
+def fetchFeatures(featuresNode, typeNameRemap, features):
+    pass
+
 def parseStruct(structure, typeNameRemap):
-    print("\nstruct {}".format(structure.name))
+    #print("\nstruct {}".format(structure.name))
     for memberNode in structure.node:
         if memberNode.tag != "member":
             continue
@@ -137,14 +141,42 @@ def parseStruct(structure, typeNameRemap):
             if node.tag == "name":
                 member.name = node.text
 
-        print("  {}".format(member))
+        #print("  {}".format(member))
         structure.members.append(member)
 
 def parseFuncPtr(funcPtr, typeNameRemap):
     pass
 
-def parseEnum(enum, typeNameRemap):
-    pass
+def parseEnum(enum, typeNameRemap, constants):
+    kind = enum.node.attrib["type"]
+
+    enum.underlyingType = typeNameRemap[enum.name]["underlyingType"]
+    enum.name = typeNameRemap[enum.name]["name"]
+
+    for constantNode in enum.node:
+        if "api" in constantNode.attrib:
+            if "vulkan" not in constantNode.attrib["api"].split(","):
+                continue
+
+        if constantNode.tag != "enum":
+                continue
+
+        if kind == "constants":
+            constant = SimpleNamespace()
+            constant.name = constantNode.attrib["name"]
+            constant.type = typeNameRemap[constantNode.attrib["type"]]["name"]
+            constant.value = constantNode.attrib["value"]
+            constants.append(constant)
+        else:
+            enumValue = SimpleNamespace()
+            enumValue.name = constantNode.attrib["name"] # enum name trimming
+            enumValue.value = constantNode.attrib["value"]
+
+            if "bitpos" in enumValueNode.attrib:
+                enumValue.value = "1 << {}".format(enumValueNode.attrib["bitpos"])
+            elif "value" in enumValueNode.attrib:
+                enumValue.value = enumValueNode.attrib["value"]
+            enum.members.append(enumValue)
 
 def parseCommand(command, typeNameRemap):
     pass
@@ -203,7 +235,7 @@ def main():
         parseFuncPtr(funcPtr, typeNameRemap)
     
     for enum in enums:
-        parseEnum(enum, typeNameRemap)
+        parseEnum(enum, typeNameRemap, constants)
     
     for command in commands:
         parseCommand(command, typeNameRemap)
