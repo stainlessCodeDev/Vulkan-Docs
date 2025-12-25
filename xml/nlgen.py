@@ -31,12 +31,11 @@ TOKEN_RE = re.compile(r"""
     \*  |       # pointer
     \(  | \) |  # parens
     \[  | \] |  # brackets
-    ,           # comma
+    ,   |       # comma
     ;           # semicolon
 """, re.VERBOSE)
 
-KEYWORDS 
-[
+KEYWORDS = [
     "const", "typedef"
 ]
 
@@ -78,13 +77,13 @@ def parseVarDecl(objNode, typeNameRemap, obj):
         elif tok.kind == Tok.KEYWORD:
             continue
         elif tok.kind == "type":
-            obj.type = " ".join([obj.type, typeNameRemap[node.text.strip()]["name"]]).strip()
+            obj.type = " ".join([obj.type, typeNameRemap[tok.value.strip()]["name"]]).strip()
             continue
         elif tok.kind == "enum":
-            obj.type = " ".join([obj.type, node.text.strip()]).strip()
+            obj.type = " ".join([obj.type, tok.value.strip()]).strip()
             continue
         elif tok.kind == "name":
-            obj.name = node.text
+            obj.name = tok.value
         else:
             obj.type = " ".join([obj.type, tok.value]).strip()
 
@@ -186,7 +185,7 @@ def fetchEnums(enumsNode, typeNameRemap, enums):
 
 def fetchCommands(commandsNode, typeNameRemap, commands):
     for commandNode in commandsNode:
-        if commandsNode.tag != "command":
+        if commandNode.tag != "command":
             continue
         
         if "api" in commandsNode.attrib:
@@ -203,6 +202,7 @@ def fetchCommands(commandsNode, typeNameRemap, commands):
         command.node = commandNode
         commands.append(command)
 
+
 def fetchFeatures(featuresNode, typeNameRemap, features):
     pass
 
@@ -218,16 +218,16 @@ def parseStruct(structure, typeNameRemap):
         member = SimpleNamespace()
         member.name = ""
         member.type = ""
-        parseVarDecl(node, typeNameRemap, member)
+        parseVarDecl(memberNode, typeNameRemap, member)
 
         #print("  {}".format(member))
         structure.members.append(member)
     
-    memberDecl = ";\n".join(["{} {}".format(member.type, member.name) for member in structure.members])
+    memberDecl = "".join(["\t{} {};\n".format(member.type, member.name) for member in structure.members])
     if structure.isUnion:
-        structure.nlDecl = "union {}\n{{\n{}}}".format(structure.name, memberDecl)
+        structure.nlDecl = "union {}\n{{\n{}}}\n".format(structure.name, memberDecl)
     else:
-        structure.nlDecl = "struct {}\n{{\n{}}}".format(structure.name, memberDecl)
+        structure.nlDecl = "struct {}\n{{\n{}}}\n".format(structure.name, memberDecl)
 
 def parseFuncPtr(funcPtr, typeNameRemap):
     state = "return"
@@ -236,7 +236,8 @@ def parseFuncPtr(funcPtr, typeNameRemap):
     argument = SimpleNamespace()
     argument.name = ""
     argument.type = ""
-    for tok in tokenizeDecl(funcPtr):
+
+    for tok in tokenizeDecl(funcPtr.node):
         if state == "return":
             if tok.kind == Tok.COMMA:
                 break
@@ -246,10 +247,10 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                returnType = " ".join([returnType, typeNameRemap[node.text.strip()]["name"]]).strip()
+                returnType = " ".join([returnType, typeNameRemap[tok.value.strip()]["name"]]).strip()
                 continue
             elif tok.kind == "enum":
-                returnType = " ".join([returnType, node.text.strip()]).strip()
+                returnType = " ".join([returnType, tok.value.strip()]).strip()
                 continue
             else:
                 returnType = " ".join([returnType, tok.value]).strip()
@@ -257,6 +258,7 @@ def parseFuncPtr(funcPtr, typeNameRemap):
         elif state == "funcptr":
             if tok.kind == "name":
                 funcPtr.name = tok.value
+                print(funcPtr.name)
             elif tok.kind == Tok.LPAREN:
                 state = "arguments"
                 continue
@@ -271,35 +273,45 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                argument.type = " ".join([argument.type, typeNameRemap[node.text.strip()]["name"]]).strip()
+                argument.type = " ".join([argument.type, typeNameRemap[tok.value.strip()]["name"]]).strip()
+                print(argument.type)
                 continue
             elif tok.kind == "enum":
-                argument.type = " ".join([argument.type, node.text.strip()]).strip()
+                argument.type = " ".join([argument.type, tok.value.strip()]).strip()
                 continue
             elif tok.kind == Tok.IDENT:
                 argument.name = tok.value
+                print(argument.name)
+                continue
+            elif tok.kind in [Tok.STAR]:
+                argument.type = " ".join([argument.type, tok.value]).strip()
                 continue
             else:
-                argument.type = " ".join([argument.type, tok.value]).strip()
                 continue
 
     assert argument.type == ""
     assert argument.name == ""
 
-    funcPtr.nlDecl = "typealias {} ({}) => {};".format(funcPtr.name, ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments]), returnType)
+    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments])
+    print(args)
+    funcPtr.nlDecl = "typealias {} ({}) => {};\n".format(funcPtr.name, args, returnType)
 
 def parseEnum(enum, typeNameRemap, constants):
     kind = enum.node.attrib["type"]
 
-    enum.underlyingType = typeNameRemap[enum.name]["underlyingType"]
-    enum.name = typeNameRemap[enum.name]["name"]
+    if kind != "constants":
+        enum.underlyingType = typeNameRemap[enum.name]["underlyingType"]
+        enum.name = typeNameRemap[enum.name]["name"]
+    else:
+        enum.underlyingType = None
+        enum.name = None
 
     for constantNode in enum.node:
         if "api" in constantNode.attrib:
             if "vulkan" not in constantNode.attrib["api"].split(","):
                 continue
 
-        if constantNode.tag != "enum":
+        if constantNode.tag != "enum" or "alias" in constantNode.attrib:
                 continue
 
         if kind == "constants":
@@ -307,12 +319,11 @@ def parseEnum(enum, typeNameRemap, constants):
             constant.name = constantNode.attrib["name"]
             constant.type = typeNameRemap[constantNode.attrib["type"]]["name"]
             constant.value = constantNode.attrib["value"]
-
+            constant.nlDecl = "const {} = {};\n".format(constant.name, constant.value)
             constants.append(constant)
         else:
             enumValue = SimpleNamespace()
             enumValue.name = constantNode.attrib["name"] # enum name trimming
-            enumValue.value = constantNode.attrib["value"]
 
             if "bitpos" in constantNode.attrib:
                 enumValue.value = "1 << {}".format(constantNode.attrib["bitpos"])
@@ -321,16 +332,18 @@ def parseEnum(enum, typeNameRemap, constants):
 
             enum.members.append(enumValue)
 
-    memberDecl = ",\n".join(["{} = {}".format(member.name, member.value) for member in enum.members])
-    enum.nlDecl = "enum {} {}\n{{\n{}}}".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
+    memberDecl = "".join(["\t{} = {},\n".format(member.name, member.value) for member in enum.members])
+    enum.nlDecl = "enum {} {}\n{{\n{}}}\n".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
 
 def parseCommand(command, typeNameRemap):
     for node in command.node:
         if node.tag == "proto":
-            parseDecl(node, typeNameRemap, command)
+            parseVarDecl(node, typeNameRemap, command)
         elif node.tag == "param":
             arg = SimpleNamespace()
-            parseDecl(node, typeNameRemap, arg)
+            arg.type = ""
+            arg.name = ""
+            parseVarDecl(node, typeNameRemap, arg)
             command.params.append(arg)
         else:
             continue
@@ -339,15 +352,15 @@ def parseCommand(command, typeNameRemap):
     if "export" in command.node.attrib:
         if "vulkan" in command.node.attrib["export"]:
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
-            funcPtr.nlDecl = "api {} ({}) => {} as \"{}\";".format(command.name, args, returnType, command.name)
+            command.nlDecl = "api {} ({}) => {} as \"{}\";\n".format(command.name, args, command.type, command.name)
     else:
         # these are not exported from loader dll, so we need some more logic here to figure out how to handle these
-        # one way is to make them all into global variables and either
-        funcPtr.nlDecl = "global {} ({}) => {};".format(command.name, args, returnType)
-        #   * make the application load them manually
-        #   * or make loader procedures per extension (they should be in the xml) that the application can choose to load if the extension is present
-        #   * or make them into stubs that return an error by default, if they aren't loaded
+        # one way is to make them all into global variables and
+        command.nlDecl = "global ({}) => {} {};\n".format(args, command.type, command.name)
+        #   * make loader procedures per extension (they should be in the xml) that the application can choose to load if the extension is present
+        #   * make them into stubs that return an error by default, if they aren't loaded
         # another way is to just emit the procedure typealiases for all of these and
+        #command.nlDecl = "typealias {} ({}) => {};".format(command.name, args, command.type)
         #   * make application to create all of the globals and load them manually
         pass
 
@@ -410,8 +423,33 @@ def main():
     for command in commands:
         parseCommand(command, typeNameRemap)
     
+    with open("vulkan.nl", "w") as f:
+        for struct in structures:
+            assert struct.nlDecl != None
+            f.write(struct.nlDecl)
 
+        for enum in enums:
+            assert enum.nlDecl != None
+            f.write(enum.nlDecl)
 
+        for const in constants:
+            assert const.nlDecl != None
+            f.write(const.nlDecl)
+
+        for funcPtr in funcPtrs:
+            assert funcPtr.nlDecl != None
+            f.write(funcPtr.nlDecl)
+
+        for command in commands:
+            assert command.nlDecl != None
+            f.write(command.nlDecl)
+
+    print("Generated vulkan.nl:")
+    print("  Structs: {}".format(len(structures)))
+    print("  Enums: {}".format(len(enums)))
+    print("  Constants: {}".format(len(constants)))
+    print("  Funcptrs: {}".format(len(funcPtrs)))
+    print("  Commands: {}".format(len(commands)))
 
 if __name__ == '__main__':
     main()
