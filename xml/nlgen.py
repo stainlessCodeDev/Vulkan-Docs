@@ -1,6 +1,7 @@
 import os
 import re
 import xml.etree.ElementTree as etree
+from enum import Enum, auto
 from types import SimpleNamespace
 
 def iterMixed(elem):
@@ -11,6 +12,81 @@ def iterMixed(elem):
         yield child
         if child.tail:
             yield child.tail
+
+class Tok(Enum):
+    IDENT = auto()
+    KEYWORD = auto()
+    STAR = auto()
+    LPAREN = auto()
+    RPAREN = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
+    COMMA = auto()
+    SEMICOLON = auto()
+    NUMBER = auto()
+
+TOKEN_RE = re.compile(r"""
+    \w[\w\d]+  |       # identifiers / keywords
+    \d+ |       # digits
+    \*  |       # pointer
+    \(  | \) |  # parens
+    \[  | \] |  # brackets
+    ,           # comma
+    ;           # semicolon
+""", re.VERBOSE)
+
+KEYWORDS 
+[
+    "const", "typedef"
+]
+
+def classifyToken(lex):
+    if lex == "*":
+        return Tok.STAR
+    elif lex == ",":
+        return Tok.COMMA
+    elif lex == ";":
+        return Tok.SEMICOLON
+    elif lex == "(":
+        return Tok.LPAREN
+    elif lex == ")":
+        return Tok.RPAREN
+    elif lex == "[":
+        return Tok.LBRACKET
+    elif lex == "]":
+        return Tok.RBRACKET
+    elif lex in KEYWORDS:
+        return Tok.KEYWORD
+    else:
+        return Tok.IDENT
+
+def tokenizeDecl(elem):
+    for part in iterMixed(elem):
+        if isinstance(part, str):
+            for tok in TOKEN_RE.findall(part):
+                yield SimpleNamespace(kind=classifyToken(tok), value=tok)
+        else:
+            # XML element (name, type, etc.)
+            yield SimpleNamespace(kind=part.tag, value=part.text)
+
+def parseVarDecl(objNode, typeNameRemap, obj):
+    for tok in tokenizeDecl(objNode):
+        if tok.kind == Tok.COMMA:
+            break
+        elif tok.kind == Tok.RPAREN:
+            break
+        elif tok.kind == Tok.KEYWORD:
+            continue
+        elif tok.kind == "type":
+            obj.type = " ".join([obj.type, typeNameRemap[node.text.strip()]["name"]]).strip()
+            continue
+        elif tok.kind == "enum":
+            obj.type = " ".join([obj.type, node.text.strip()]).strip()
+            continue
+        elif tok.kind == "name":
+            obj.name = node.text
+        else:
+            obj.type = " ".join([obj.type, tok.value]).strip()
 
 def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs):
     for typeNode in typesNode:
@@ -112,8 +188,20 @@ def fetchCommands(commandsNode, typeNameRemap, commands):
     for commandNode in commandsNode:
         if commandsNode.tag != "command":
             continue
-
         
+        if "api" in commandsNode.attrib:
+            if "vulkan" not in commandNode.attrib["api"].split(","):
+                continue
+
+        if "alias" in commandNode.attrib:
+            continue
+
+        command = SimpleNamespace()
+        command.name = ""
+        command.type = "" # return type
+        command.params = []
+        command.node = commandNode
+        commands.append(command)
 
 def fetchFeatures(featuresNode, typeNameRemap, features):
     pass
@@ -123,33 +211,82 @@ def parseStruct(structure, typeNameRemap):
     for memberNode in structure.node:
         if memberNode.tag != "member":
             continue
-        if memberNode.attrib.get("api") != None:
+        if "api" in memberNode.attrib:
             if "vulkan" not in memberNode.attrib["api"].split(","):
                 continue
         
         member = SimpleNamespace()
         member.name = ""
         member.type = ""
-        for node in iterMixed(memberNode):
-            if isinstance(node, str):
-                node = node.strip()
-                if node != "const":
-                    member.type = " ".join([member.type, node]).strip()
-                continue
-            if node.tag == "type":
-                member.type = " ".join([member.type, typeNameRemap[node.text.strip()]["name"]]).strip()
-                continue
-            if node.tag == "enum":
-                member.type = " ".join([member.type, node.text.strip()]).strip()
-                continue
-            if node.tag == "name":
-                member.name = node.text
+        parseVarDecl(node, typeNameRemap, member)
 
         #print("  {}".format(member))
         structure.members.append(member)
+    
+    memberDecl = ";\n".join(["{} {}".format(member.type, member.name) for member in structure.members])
+    if structure.isUnion:
+        structure.nlDecl = "union {}\n{{\n{}}}".format(structure.name, memberDecl)
+    else:
+        structure.nlDecl = "struct {}\n{{\n{}}}".format(structure.name, memberDecl)
 
 def parseFuncPtr(funcPtr, typeNameRemap):
-    pass
+    state = "return"
+    returnType = ""
+    arguments = []
+    argument = SimpleNamespace()
+    argument.name = ""
+    argument.type = ""
+    for tok in tokenizeDecl(funcPtr):
+        if state == "return":
+            if tok.kind == Tok.COMMA:
+                break
+            elif tok.kind == Tok.LPAREN:
+                state = "funcptr"
+                continue
+            elif tok.kind == Tok.KEYWORD:
+                continue
+            elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
+                returnType = " ".join([returnType, typeNameRemap[node.text.strip()]["name"]]).strip()
+                continue
+            elif tok.kind == "enum":
+                returnType = " ".join([returnType, node.text.strip()]).strip()
+                continue
+            else:
+                returnType = " ".join([returnType, tok.value]).strip()
+                continue
+        elif state == "funcptr":
+            if tok.kind == "name":
+                funcPtr.name = tok.value
+            elif tok.kind == Tok.LPAREN:
+                state = "arguments"
+                continue
+            else:
+                continue
+        elif state == "arguments":
+            if tok.kind in [Tok.COMMA, Tok.SEMICOLON]:
+                arguments.append(argument)
+                argument = SimpleNamespace()
+                argument.name = ""
+                argument.type = ""
+            elif tok.kind == Tok.KEYWORD:
+                continue
+            elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
+                argument.type = " ".join([argument.type, typeNameRemap[node.text.strip()]["name"]]).strip()
+                continue
+            elif tok.kind == "enum":
+                argument.type = " ".join([argument.type, node.text.strip()]).strip()
+                continue
+            elif tok.kind == Tok.IDENT:
+                argument.name = tok.value
+                continue
+            else:
+                argument.type = " ".join([argument.type, tok.value]).strip()
+                continue
+
+    assert argument.type == ""
+    assert argument.name == ""
+
+    funcPtr.nlDecl = "typealias {} ({}) => {};".format(funcPtr.name, ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments]), returnType)
 
 def parseEnum(enum, typeNameRemap, constants):
     kind = enum.node.attrib["type"]
@@ -184,8 +321,35 @@ def parseEnum(enum, typeNameRemap, constants):
 
             enum.members.append(enumValue)
 
+    memberDecl = ",\n".join(["{} = {}".format(member.name, member.value) for member in enum.members])
+    enum.nlDecl = "enum {} {}\n{{\n{}}}".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
+
 def parseCommand(command, typeNameRemap):
-    pass
+    for node in command.node:
+        if node.tag == "proto":
+            parseDecl(node, typeNameRemap, command)
+        elif node.tag == "param":
+            arg = SimpleNamespace()
+            parseDecl(node, typeNameRemap, arg)
+            command.params.append(arg)
+        else:
+            continue
+
+    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.params])
+    if "export" in command.node.attrib:
+        if "vulkan" in command.node.attrib["export"]:
+            # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
+            funcPtr.nlDecl = "api {} ({}) => {} as \"{}\";".format(command.name, args, returnType, command.name)
+    else:
+        # these are not exported from loader dll, so we need some more logic here to figure out how to handle these
+        # one way is to make them all into global variables and either
+        funcPtr.nlDecl = "global {} ({}) => {};".format(command.name, args, returnType)
+        #   * make the application load them manually
+        #   * or make loader procedures per extension (they should be in the xml) that the application can choose to load if the extension is present
+        #   * or make them into stubs that return an error by default, if they aren't loaded
+        # another way is to just emit the procedure typealiases for all of these and
+        #   * make application to create all of the globals and load them manually
+        pass
 
 def main():
     treeRoot = etree.parse("vk.xml")
