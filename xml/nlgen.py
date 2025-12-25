@@ -109,7 +109,11 @@ def fetchEnums(enumsNode, typeNameRemap, enums):
     enums.append(enum)
 
 def fetchCommands(commandsNode, typeNameRemap, commands):
-    pass
+    for commandNode in commandsNode:
+        if commandsNode.tag != "command":
+            continue
+
+        
 
 def fetchFeatures(featuresNode, typeNameRemap, features):
     pass
@@ -166,16 +170,18 @@ def parseEnum(enum, typeNameRemap, constants):
             constant.name = constantNode.attrib["name"]
             constant.type = typeNameRemap[constantNode.attrib["type"]]["name"]
             constant.value = constantNode.attrib["value"]
+
             constants.append(constant)
         else:
             enumValue = SimpleNamespace()
             enumValue.name = constantNode.attrib["name"] # enum name trimming
             enumValue.value = constantNode.attrib["value"]
 
-            if "bitpos" in enumValueNode.attrib:
-                enumValue.value = "1 << {}".format(enumValueNode.attrib["bitpos"])
-            elif "value" in enumValueNode.attrib:
-                enumValue.value = enumValueNode.attrib["value"]
+            if "bitpos" in constantNode.attrib:
+                enumValue.value = "1 << {}".format(constantNode.attrib["bitpos"])
+            elif "value" in constantNode.attrib:
+                enumValue.value = constantNode.attrib["value"]
+
             enum.members.append(enumValue)
 
 def parseCommand(command, typeNameRemap):
