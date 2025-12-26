@@ -418,7 +418,7 @@ def main():
     constants = []
     enums = []
     commands = []
-    features = []
+    features = [] # Features seems to be a very very messy!
 
     for registryNode in registryNode:
         match registryNode.tag:
