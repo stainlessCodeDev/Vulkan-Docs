@@ -98,7 +98,7 @@ def parseVarDecl(objNode, typeNameRemap, obj):
         else:
             continue
 
-def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs, enums):
+def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs):
     for typeNode in typesNode:
         if typeNode.tag != "type":
             continue
@@ -135,6 +135,11 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                         typeNameRemap[typeNode.attrib["bitvalues"]] = {"name": nameNode.text, "underlyingType": typealiasNode.text}
                     typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": typealiasNode.text}
 
+                    # typedefs that will be removed once an enum shows up, if not it will remain as typedef
+                    alias = SimpleNamespace()
+                    alias.name = nameNode.text
+                    alias.type = typeNameRemap[typealiasNode.text]["name"]
+                    typedefs.append(alias)
                 case "define":
                     pass
                 case "enum":
@@ -306,7 +311,7 @@ def parseFuncPtr(funcPtr, typeNameRemap):
     args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments if arg.name != ""])
     funcPtr.nlDecl = "typealias {} ({}) => {};\n".format(funcPtr.name, args, returnType)
 
-def parseEnum(enum, typeNameRemap, constants):
+def parseEnum(enum, typeNameRemap, constants, typedefs):
     kind = enum.node.attrib["type"]
 
     if kind != "constants":
@@ -315,6 +320,10 @@ def parseEnum(enum, typeNameRemap, constants):
     else:
         enum.underlyingType = None
         enum.name = None
+
+    for td in typedefs:
+        if enum.name == td.name:
+            typedefs.remove(td)
 
     for constantNode in enum.node:
         if "api" in constantNode.attrib:
@@ -429,12 +438,14 @@ def main():
         parseFuncPtr(funcPtr, typeNameRemap)
     
     for enum in enums:
-        parseEnum(enum, typeNameRemap, constants)
+        parseEnum(enum, typeNameRemap, constants, typedefs)
     
     for command in commands:
         parseCommand(command, typeNameRemap)
     
     with open("vulkan.nl", "w") as f:
+        f.write("import \"Windows\"") # Temporary
+
         for alias in typealiases:
             f.write("typealias {} {};\n".format(alias.name, alias.type))
 
