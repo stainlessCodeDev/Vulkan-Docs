@@ -24,6 +24,7 @@ class Tok(Enum):
     COMMA = auto()
     SEMICOLON = auto()
     NUMBER = auto()
+    COLON = auto()
 
 TOKEN_RE = re.compile(r"""
     \w[\w\d]+  |       # identifiers / keywords
@@ -32,11 +33,12 @@ TOKEN_RE = re.compile(r"""
     \(  | \) |  # parens
     \[  | \] |  # brackets
     ,   |       # comma
-    ;           # semicolon
+    ;   |       # semicolon
+    :           # colon
 """, re.VERBOSE)
 
 KEYWORDS = [
-    "const", "typedef"
+    "const", "typedef", "struct", "union"
 ]
 
 def classifyToken(lex):
@@ -46,6 +48,8 @@ def classifyToken(lex):
         return Tok.COMMA
     elif lex == ";":
         return Tok.SEMICOLON
+    elif lex == ":":
+        return Tok.COLON
     elif lex == "(":
         return Tok.LPAREN
     elif lex == ")":
@@ -56,6 +60,8 @@ def classifyToken(lex):
         return Tok.RBRACKET
     elif lex in KEYWORDS:
         return Tok.KEYWORD
+    elif lex.isnumeric():
+        return Tok.NUMBER
     else:
         return Tok.IDENT
 
@@ -84,10 +90,15 @@ def parseVarDecl(objNode, typeNameRemap, obj):
             continue
         elif tok.kind == "name":
             obj.name = tok.value
+            continue
+        elif tok.kind in [Tok.STAR, Tok.LBRACKET, Tok.RBRACKET, Tok.NUMBER]:
+            obj.type = "".join([obj.type, tok.value]).strip()
+        elif tok.kind == Tok.COLON:
+            break # We skip bit-fields for now, those structs will be broken!!!!!
         else:
-            obj.type = " ".join([obj.type, tok.value]).strip()
+            continue
 
-def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs):
+def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs, enums):
     for typeNode in typesNode:
         if typeNode.tag != "type":
             continue
@@ -110,7 +121,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     if "typedef" in typeNode.text and nameNode != None and typealiasNode != None:
                         alias = SimpleNamespace()
                         alias.name = nameNode.text
-                        alias.type = typealiasNode.text # we might need to parse the typedef more properly
+                        alias.type = typeNameRemap[typealiasNode.text]["name"] # we might need to parse the typedef more properly
                         typedefs.append(alias)
                         typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
                     else:
@@ -120,6 +131,8 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     # these are enums that are typedef'd for some reason
                     if "requires" in typeNode.attrib:
                         typeNameRemap[typeNode.attrib["requires"]] = {"name": nameNode.text, "underlyingType": typealiasNode.text}
+                    elif "bitvalues" in typeNode.attrib:
+                        typeNameRemap[typeNode.attrib["bitvalues"]] = {"name": nameNode.text, "underlyingType": typealiasNode.text}
                     typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": typealiasNode.text}
 
                 case "define":
@@ -142,7 +155,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                 case "handle":
                     alias = SimpleNamespace()
                     alias.name = nameNode.text
-                    alias.type = typealiasNode.text
+                    alias.type = "void*"
                     typedefs.append(alias)
 
                     typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
@@ -170,7 +183,8 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
             continue
         elif "requires" in typeNode.attrib:
-            typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
+            if nameAttrib not in typeNameRemap:
+                typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
 
 def fetchEnums(enumsNode, typeNameRemap, enums):
     if "name" not in enumsNode.attrib:
@@ -258,7 +272,6 @@ def parseFuncPtr(funcPtr, typeNameRemap):
         elif state == "funcptr":
             if tok.kind == "name":
                 funcPtr.name = tok.value
-                print(funcPtr.name)
             elif tok.kind == Tok.LPAREN:
                 state = "arguments"
                 continue
@@ -274,14 +287,12 @@ def parseFuncPtr(funcPtr, typeNameRemap):
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
                 argument.type = " ".join([argument.type, typeNameRemap[tok.value.strip()]["name"]]).strip()
-                print(argument.type)
                 continue
             elif tok.kind == "enum":
                 argument.type = " ".join([argument.type, tok.value.strip()]).strip()
                 continue
             elif tok.kind == Tok.IDENT:
                 argument.name = tok.value
-                print(argument.name)
                 continue
             elif tok.kind in [Tok.STAR]:
                 argument.type = " ".join([argument.type, tok.value]).strip()
@@ -292,8 +303,7 @@ def parseFuncPtr(funcPtr, typeNameRemap):
     assert argument.type == ""
     assert argument.name == ""
 
-    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments])
-    print(args)
+    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments if arg.name != ""])
     funcPtr.nlDecl = "typealias {} ({}) => {};\n".format(funcPtr.name, args, returnType)
 
 def parseEnum(enum, typeNameRemap, constants):
@@ -332,7 +342,7 @@ def parseEnum(enum, typeNameRemap, constants):
 
             enum.members.append(enumValue)
 
-    memberDecl = "".join(["\t{} = {},\n".format(member.name, member.value) for member in enum.members])
+    memberDecl = "".join(["\t{} = {};\n".format(member.name, member.value) for member in enum.members])
     enum.nlDecl = "enum {} {}\n{{\n{}}}\n".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
 
 def parseCommand(command, typeNameRemap):
@@ -348,7 +358,7 @@ def parseCommand(command, typeNameRemap):
         else:
             continue
 
-    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.params])
+    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.params if arg.name != ""])
     if "export" in command.node.attrib:
         if "vulkan" in command.node.attrib["export"]:
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
@@ -388,7 +398,8 @@ def main():
         "uint16_t": {"name" : "u16", "underlyingType": None},
         "uint32_t": {"name" : "u32", "underlyingType": None},
         "uint64_t": {"name" : "u64", "underlyingType": None},
-        "size_t": {"name" : "uintptr", "underlyingType": None},
+        "size_t": {"name" : "uptr", "underlyingType": None},
+        "ptrdiff_t": {"name": "iptr", "underlyingType": None},
     }
 
     typealiases = []
@@ -424,27 +435,45 @@ def main():
         parseCommand(command, typeNameRemap)
     
     with open("vulkan.nl", "w") as f:
+        for alias in typealiases:
+            f.write("typealias {} {};\n".format(alias.name, alias.type))
+
+        f.write("\n")
+
+        for alias in typedefs:
+            f.write("typedef {} {};\n".format(alias.name, alias.type))
+
+        f.write("\n")
+
         for struct in structures:
             assert struct.nlDecl != None
             f.write(struct.nlDecl)
+            f.write("\n")
 
         for enum in enums:
             assert enum.nlDecl != None
             f.write(enum.nlDecl)
+            f.write("\n")
 
         for const in constants:
             assert const.nlDecl != None
             f.write(const.nlDecl)
 
+        f.write("\n")
+
         for funcPtr in funcPtrs:
             assert funcPtr.nlDecl != None
             f.write(funcPtr.nlDecl)
+
+        f.write("\n")
 
         for command in commands:
             assert command.nlDecl != None
             f.write(command.nlDecl)
 
     print("Generated vulkan.nl:")
+    print("  Typealiases: {}".format(len(typealiases)))
+    print("  Typedefs: {}".format(len(typedefs)))
     print("  Structs: {}".format(len(structures)))
     print("  Enums: {}".format(len(enums)))
     print("  Constants: {}".format(len(constants)))
