@@ -300,7 +300,7 @@ def parseVarDecl(objNode, typeNameRemap, obj):
         elif tok.kind == Tok.KEYWORD:
             continue
         elif tok.kind == "type":
-            obj.type += " " + typeNameRemap[tok.value]["name"]
+            obj.type += " " + typeNameRemap[tok.value]
             continue
         elif tok.kind == "enum":
             obj.type += " " + tok.value
@@ -336,8 +336,9 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
             alias.name = nameAttrib
             alias.type = aliasName
             alias.apis = apis
+            alias.node = typeNode
             typealiases[alias.name] = alias
-            typeNameRemap[nameAttrib] = {"name": aliasName, "underlyingType": None}
+            typeNameRemap[nameAttrib] = aliasName
             continue
 
         if "category" in typeNode.attrib:
@@ -346,13 +347,10 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     alias = Typedef()
                     alias.name = nameNode.text
                     alias.apis = apis
-                    alias.type = ""
-
-                    if "typedef" in typeNode.text:
-                        parseVarDecl(typeNode, typeNameRemap, alias)
+                    alias.node = typeNode
 
                     typealiases[alias.name] = alias
-                    typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
+                    typeNameRemap[nameNode.text] = nameNode.text
 
                 case "bitmask":
                     # these are enums that are typedef'd for some reason
@@ -360,21 +358,21 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     alias = Typedef()
                     alias.name = nameNode.text
                     alias.apis = apis
-                    parseVarDecl(typeNode, typeNameRemap, alias)
+                    alias.node = typeNode
 
                     typedefs[alias.name] = alias
 
                     if "requires" in typeNode.attrib:
-                        typeNameRemap[typeNode.attrib["requires"]] = {"name": alias.name, "underlyingType": alias.type}
+                        typeNameRemap[typeNode.attrib["requires"]] = alias.name
                     elif "bitvalues" in typeNode.attrib:
-                        typeNameRemap[typeNode.attrib["bitvalues"]] = {"name": alias.name, "underlyingType": alias.type}
+                        typeNameRemap[typeNode.attrib["bitvalues"]] = alias.name
 
-                    typeNameRemap[alias.name] = {"name": alias.name, "underlyingType": alias.type}
+                    typeNameRemap[alias.name] = alias.name
                 case "define":
                     pass
                 case "enum":
                     if nameAttrib not in typeNameRemap:
-                        typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType" : None}
+                        typeNameRemap[nameAttrib] = nameAttrib
 
                 case "funcpointer":
                     funcPtr = Funcptr()
@@ -383,7 +381,7 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     funcPtr.apis = apis
                     funcPtrs[funcPtr.name] = funcPtr
 
-                    typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
+                    typeNameRemap[nameNode.text] = nameNode.text
 
                 case "group":
                     pass
@@ -392,9 +390,10 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     alias.name = nameNode.text
                     alias.type = "void*"
                     alias.apis = apis
+                    alias.node = typeNode
                     typedefs[alias.name] = alias
 
-                    typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
+                    typeNameRemap[nameNode.text] = nameNode.text
 
                 case "include":
                     pass
@@ -405,7 +404,7 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     structure.apis = apis
                     structures[structure.name] = structure
 
-                    typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
+                    typeNameRemap[nameAttrib] = nameAttrib
 
                 case "union":
                     structure = Struct()
@@ -415,11 +414,11 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     structure.apis = apis
                     structures[structure.name] = structure
 
-                    typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
+                    typeNameRemap[nameAttrib] = nameAttrib
             continue
         elif "requires" in typeNode.attrib:
             if nameAttrib not in typeNameRemap:
-                typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
+                typeNameRemap[nameAttrib] = nameAttrib
 
 def fetchEnums(enumsNode, typeNameRemap, enums):
     if "name" not in enumsNode.attrib:
@@ -487,6 +486,13 @@ def fetchExtensions(extensionsNode, typeNameRemap, extensions):
 
         extensions[extension.name] = extension
 
+def parseAlias(alias, typeNameRemap):
+    if alias.node.text and "typedef" in alias.node.text:
+        parseVarDecl(alias.node, typeNameRemap, alias)
+
+    if alias.type in typeNameRemap:
+        alias.type = typeNameRemap[alias.type]
+
 def parseStruct(structure: Struct, typeNameRemap):
     for memberNode in structure.node:
         if memberNode.tag != "member":
@@ -518,7 +524,7 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                returnType = " ".join([returnType, typeNameRemap[tok.value.strip()]["name"]]).strip()
+                returnType = " ".join([returnType, typeNameRemap[tok.value.strip()]]).strip()
                 continue
             elif tok.kind == "enum":
                 returnType = " ".join([returnType, tok.value.strip()]).strip()
@@ -543,7 +549,7 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                argument.type = " ".join([argument.type, typeNameRemap[tok.value.strip()]["name"]]).strip()
+                argument.type = " ".join([argument.type, typeNameRemap[tok.value.strip()]]).strip()
                 continue
             elif tok.kind == "enum":
                 argument.type = " ".join([argument.type, tok.value.strip()]).strip()
@@ -567,17 +573,18 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
 
     if kind != "constants":
         enums.pop(enum.name)
-        enum.type = typeNameRemap[enum.name]["underlyingType"]
-        enum.name = typeNameRemap[enum.name]["name"]
+
+        if enum.name in typedefs:
+            alias = typedefs[enum.name]
+            typedefs.pop(enum.name)
+            enum.type = typeNameRemap[alias.type]
+
+        enum.name = typeNameRemap[enum.name]
         enums[enum.name] = enum
     else:
         enums.pop(enum.name)
         enum.type = ""
         enum.name = ""
-
-    for td in list(typedefs.values()):
-        if enum.name == td.name:
-            typedefs.pop(td.name)
 
     for constantNode in enum.node:
         if constantNode.tag != "enum":
@@ -598,7 +605,7 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
 
         if kind == "constants":
             enumValue.isConst = True
-            enumValue.type = typeNameRemap[constantNode.attrib["type"]]["name"]
+            enumValue.type = typeNameRemap[constantNode.attrib["type"]]
             constants[enumValue.name] = enumValue
         else:
             enum.members[enumValue.name] = enumValue
@@ -629,7 +636,7 @@ def parseEnumExtension(itemNode, name, typeNameRemap, enums, extNumber):
     if "alias" in itemNode.attrib:
         return
 
-    extendsEnum: Enum = enums[typeNameRemap[itemNode.attrib["extends"]]["name"]]
+    extendsEnum: Enum = enums[typeNameRemap[itemNode.attrib["extends"]]]
     enumValue = EnumMember()
     enumValue.name = name
 
@@ -670,7 +677,7 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, objec
                 command.setPlatform(extension.platform)
                 command.setDisabled(extension.isDisabled())
             elif itemNode.tag == "type":
-                type = objects[typeNameRemap[name]["name"]]
+                type = objects[typeNameRemap[name]]
                 type.setPlatform(extension.platform)
                 type.setDisabled(extension.isDisabled())
 
@@ -727,21 +734,21 @@ def main():
     # and grab the protect attribute for all of them if we actually need it
 
     typeNameRemap = {
-        "void": {"name" : "void", "underlyingType": None},
-        "char": {"name" : "u8", "underlyingType": None},
-        "float": {"name" : "f32", "underlyingType": None},
-        "double": {"name" : "f64", "underlyingType": None},
-        "int": {"name" : "i32", "underlyingType": None},
-        "int8_t": {"name" : "i8", "underlyingType": None},
-        "int16_t": {"name" : "i16", "underlyingType": None},
-        "int32_t": {"name" : "i32", "underlyingType": None},
-        "int64_t": {"name" : "i64", "underlyingType": None},
-        "uint8_t": {"name" : "u8", "underlyingType": None},
-        "uint16_t": {"name" : "u16", "underlyingType": None},
-        "uint32_t": {"name" : "u32", "underlyingType": None},
-        "uint64_t": {"name" : "u64", "underlyingType": None},
-        "size_t": {"name" : "uptr", "underlyingType": None},
-        "ptrdiff_t": {"name": "iptr", "underlyingType": None},
+        "void":      "void",
+        "char":      "u8",
+        "float":     "f32",
+        "double":    "f64",
+        "int":       "i32",
+        "int8_t":    "i8",
+        "int16_t":   "i16",
+        "int32_t":   "i32",
+        "int64_t":   "i64",
+        "uint8_t":   "u8",
+        "uint16_t":  "u16",
+        "uint32_t":  "u32",
+        "uint64_t":  "u64",
+        "size_t":    "uptr",
+        "ptrdiff_t": "iptr",
     }
 
     typealiases = {}
@@ -775,14 +782,16 @@ def main():
         while newAlias != prevAlias:
             prevAlias = newAlias
             if prevAlias in typeNameRemap:
-                newAlias = typeNameRemap[prevAlias]["name"]
+                newAlias = typeNameRemap[prevAlias]
 
-        typeNameRemap[alias]["name"] = newAlias
+        typeNameRemap[alias] = newAlias
 
     for alias in typealiases.values():
+        parseAlias(alias, typeNameRemap)
         objects[alias.name] = alias
 
     for alias in typedefs.values():
+        parseAlias(alias, typeNameRemap)
         objects[alias.name] = alias
 
     for structure in list(structures.values()):
