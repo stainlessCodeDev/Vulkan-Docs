@@ -349,7 +349,7 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                     alias.apis = apis
                     alias.node = typeNode
 
-                    typealiases[alias.name] = alias
+                    typedefs[alias.name] = alias
                     typeNameRemap[nameNode.text] = nameNode.text
 
                 case "bitmask":
@@ -681,7 +681,7 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, objec
                 type.setPlatform(extension.platform)
                 type.setDisabled(extension.isDisabled())
 
-def generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions):
+def generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects):
     filePlatform = platform.capitalize()
     api = "vulkan"
 
@@ -690,6 +690,10 @@ def generateDefsForPlatform(platform, typealiases, typedefs, constants, structur
             platform = ""
 
         for alias in typealiases.values():
+            if alias.type in objects:
+                if objects[alias.type].isDisabled(api, platform):
+                    continue
+
             f.write(alias.toDecl(api, platform))
 
         f.write("\n")
@@ -820,7 +824,7 @@ def main():
         object.inferPlatform()
 
     for platform in supportedPlatforms:
-        generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions)
+        generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!\nTotals:")
     print("  Typealiases: {}".format(len(typealiases)))
