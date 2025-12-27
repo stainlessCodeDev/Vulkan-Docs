@@ -11,7 +11,7 @@ class BaseObject:
     type: str = field(default=None, init=False)
     node: etree.Element = field(default=None, init=False)
 
-    platform: str = field(default=None, init=False)
+    platform: str = field(default="", init=False)
     enabledCounter: int = field(default=0, init=False)
     apis: list[str] = field(default_factory=list[str], init=False)
 
@@ -31,7 +31,7 @@ class BaseObject:
     def isDisabled(self, api = None, platform = None):
         if api != None and len(self.apis) > 0 and api not in self.apis:
             return True
-        elif platform != None and self.platform != None and self.platform != platform:
+        elif platform != None and self.platform != platform:
             return True
         elif self.enabledCounter < 0:
             return True
@@ -447,7 +447,7 @@ def fetchCommands(commandsNode, typeNameRemap, commands):
             command.apis = commandNode.attrib["api"].split(",")
 
         if "alias" in commandNode.attrib:
-            command.aliasName = commandNode.attrib["alias"]
+            command.alias = commandNode.attrib["alias"]
             command.name = commandNode.attrib["name"]
         else:
             command.name = commandNode.find("proto/name").text
