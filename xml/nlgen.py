@@ -122,7 +122,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                         alias = SimpleNamespace()
                         alias.name = nameNode.text
                         alias.type = typeNameRemap[typealiasNode.text]["name"] # we might need to parse the typedef more properly
-                        typedefs.append(alias)
+                        typedefs[alias.name] = alias
                         typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
                     else:
                         typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
@@ -139,7 +139,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     alias = SimpleNamespace()
                     alias.name = nameNode.text
                     alias.type = typeNameRemap[typealiasNode.text]["name"]
-                    typedefs.append(alias)
+                    typedefs[alias.name] = alias
                 case "define":
                     pass
                 case "enum":
@@ -148,10 +148,10 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
 
                 case "funcpointer":
                     funcPtr = SimpleNamespace()
-                    funcPtr.name = nameAttrib
+                    funcPtr.name = nameNode.text
                     funcPtr.members = []
                     funcPtr.node = typeNode
-                    funcPtrs.append(funcPtr)
+                    funcPtrs[funcPtr.name] = funcPtr
 
                     typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
 
@@ -161,7 +161,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     alias = SimpleNamespace()
                     alias.name = nameNode.text
                     alias.type = "void*"
-                    typedefs.append(alias)
+                    typedefs[alias.name] = alias
 
                     typeNameRemap[nameNode.text] = {"name": nameNode.text, "underlyingType": None}
 
@@ -173,7 +173,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     structure.members = []
                     structure.isUnion = False
                     structure.node = typeNode
-                    structures.append(structure)
+                    structures[structure.name] = structure
 
                     typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
 
@@ -183,7 +183,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
                     structure.members = []
                     structure.isUnion = True
                     structure.node = typeNode
-                    structures.append(structure)
+                    structures[structure.name] = structure
 
                     typeNameRemap[nameAttrib] = {"name": nameAttrib, "underlyingType": None}
             continue
@@ -200,7 +200,7 @@ def fetchEnums(enumsNode, typeNameRemap, enums):
     enum.name = enumsNode.attrib["name"]
     enum.node = enumsNode
     enum.members = []
-    enums.append(enum)
+    enums[enum.name] = enum
 
 def fetchCommands(commandsNode, typeNameRemap, commands):
     for commandNode in commandsNode:
@@ -210,19 +210,33 @@ def fetchCommands(commandsNode, typeNameRemap, commands):
         if "api" in commandsNode.attrib:
             if "vulkan" not in commandNode.attrib["api"].split(","):
                 continue
-
+        
+        aliasName = None
+        name = ""
         if "alias" in commandNode.attrib:
-            continue
+            aliasName = commandNode.attrib["alias"]
+            name = commandNode.attrib["name"]
+        else:
+            name = commandNode.find("proto/name").text
 
         command = SimpleNamespace()
-        command.name = ""
+        command.name = name
         command.type = "" # return type
-        command.params = []
+        command.args = []
         command.node = commandNode
-        commands.append(command)
+        command.alias = aliasName
+        commands[command.name] = command
 
+def fetchFeatures(featureNode, typeNameRemap, features):
+    if "api" in featureNode.attrib:
+        if "vulkan" not in featureNode.attrib["api"].split(","):
+            return
+    feature = SimpleNamespace()
+    feature.name = featureNode.attrib["name"]
+    feature.node = featureNode
+    features[feature.name] = feature
 
-def fetchFeatures(featuresNode, typeNameRemap, features):
+def fetchExtensions(extensionsNode, typeNameRemap, extensions, supportedPlatforms):
     pass
 
 def parseStruct(structure, typeNameRemap):
@@ -311,19 +325,21 @@ def parseFuncPtr(funcPtr, typeNameRemap):
     args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in arguments if arg.name != ""])
     funcPtr.nlDecl = "typealias {} ({}) => {};\n".format(funcPtr.name, args, returnType)
 
-def parseEnum(enum, typeNameRemap, constants, typedefs):
+def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
     kind = enum.node.attrib["type"]
 
     if kind != "constants":
+        enums.pop(enum.name)
         enum.underlyingType = typeNameRemap[enum.name]["underlyingType"]
         enum.name = typeNameRemap[enum.name]["name"]
+        enums[enum.name] = enum
     else:
         enum.underlyingType = None
         enum.name = None
 
-    for td in typedefs:
+    for td in list(typedefs.values()):
         if enum.name == td.name:
-            typedefs.remove(td)
+            typedefs.pop(td.name)
 
     for constantNode in enum.node:
         if "api" in constantNode.attrib:
@@ -339,7 +355,7 @@ def parseEnum(enum, typeNameRemap, constants, typedefs):
             constant.type = typeNameRemap[constantNode.attrib["type"]]["name"]
             constant.value = constantNode.attrib["value"]
             constant.nlDecl = "const {} = {};\n".format(constant.name, constant.value)
-            constants.append(constant)
+            constants[constant.name] = constant
         else:
             enumValue = SimpleNamespace()
             enumValue.name = constantNode.attrib["name"] # enum name trimming
@@ -355,6 +371,9 @@ def parseEnum(enum, typeNameRemap, constants, typedefs):
     enum.nlDecl = "enum {} {}\n{{\n{}}}\n".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
 
 def parseCommand(command, typeNameRemap):
+    if command.alias != None:
+        return
+
     for node in command.node:
         if node.tag == "proto":
             parseVarDecl(node, typeNameRemap, command)
@@ -363,24 +382,65 @@ def parseCommand(command, typeNameRemap):
             arg.type = ""
             arg.name = ""
             parseVarDecl(node, typeNameRemap, arg)
-            command.params.append(arg)
+            command.args.append(arg)
         else:
             continue
 
-    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.params if arg.name != ""])
-    if "export" in command.node.attrib:
-        if "vulkan" in command.node.attrib["export"]:
+    args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.args if arg.name != ""])
+    command.nlDecl = "global ({}) => {} {};\n".format(args, command.type, command.name)
+    #if "export" in command.node.attrib:
+    #    if "vulkan" in command.node.attrib["export"].split(","):
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
-            command.nlDecl = "api {} ({}) => {} as \"{}\";\n".format(command.name, args, command.type, command.name)
-    else:
+    #        command.nlDecl = "api {} ({}) => {} as \"{}\";\n".format(command.name, args, command.type, command.name)
+    #else:
         # these are not exported from loader dll, so we need some more logic here to figure out how to handle these
         # one way is to make them all into global variables and
-        command.nlDecl = "global ({}) => {} {};\n".format(args, command.type, command.name)
         #   * make loader procedures per extension (they should be in the xml) that the application can choose to load if the extension is present
         #   * make them into stubs that return an error by default, if they aren't loaded
         # another way is to just emit the procedure typealiases for all of these and
         #command.nlDecl = "typealias {} ({}) => {};".format(command.name, args, command.type)
         #   * make application to create all of the globals and load them manually
+
+def parseEnumExtension(itemNode, typeNameRemap, enums, extNumber):
+    if "alias" in itemNode.attrib:
+        return
+
+    extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]["name"]]
+    enumValue = SimpleNamespace()
+    enumValue.name = itemNode.attrib["name"] # enum name trimming
+
+    if "bitpos" in itemNode.attrib:
+        enumValue.value = "1 << {}".format(itemNode.attrib["bitpos"])
+    elif "value" in itemNode.attrib:
+        enumValue.value = itemNode.attrib["value"]
+    else:
+        if "extnumber" in itemNode.attrib:
+            extNumber = int(itemNode.attrib["extnumber"]) - 1 # Why is it -1???
+        enumValue.value = str((1000000 + extNumber) * 1000 + int(itemNode.attrib["offset"]))
+
+    extendsEnum.members.append(enumValue)
+
+def parseFeature(feature, typeNameRemap, enums):
+    for requireNode in feature.node:
+        for itemNode in requireNode:
+            if itemNode.tag == "enum":
+                if "extends" in itemNode.attrib:
+                    parseEnumExtension(itemNode, typeNameRemap, enums, None)
+
+def parseExtenstion(extension, typeNameRemap, enums):
+    extensionNumber = extention.attrib["number"] - 1 # Why is it -1???
+
+    for requireNode in extension.node:
+        for itemNode in requireNode:
+            if itemNode.tag == "enum":
+                if "extends" in itemNode.attrib:
+                    parseEnumExtension(itemNode, typeNameRemap, enums, extensionNumber)
+            elif itemNode.tag == "command":
+                extension.commandsToLoad.append(itemNode.attrib["name"])
+    
+    for commandsToLoad in extension.commandsToLoad:
+        # we need to generate some convenience function that allow the user to load api pointers for the extension all at once
+        # maybe even we can do a check or something, need to learn a bit more about extensions and if there anything special needs to be done to load one
         pass
 
 def main():
@@ -411,14 +471,15 @@ def main():
         "ptrdiff_t": {"name": "iptr", "underlyingType": None},
     }
 
-    typealiases = []
-    typedefs = []
-    structures = []
-    funcPtrs = []
-    constants = []
-    enums = []
-    commands = []
-    features = [] # Features seems to be a very very messy!
+    typealiases = {}
+    typedefs = {}
+    structures = {}
+    funcPtrs = {}
+    constants = {}
+    enums = {}
+    commands = {}
+    features = {} # Features seems to be a very very messy!
+    extensions = {}
 
     for registryNode in registryNode:
         match registryNode.tag:
@@ -430,55 +491,63 @@ def main():
                 fetchCommands(registryNode, typeNameRemap, commands)
             case "feature":
                 fetchFeatures(registryNode, typeNameRemap, features)
+            case "extensions":
+                fetchExtensions(registryNode, typeNameRemap, extensions, supportedPlatforms)
 
-    for structure in structures:
+    for structure in list(structures.values()):
         parseStruct(structure, typeNameRemap)
 
-    for funcPtr in funcPtrs:
+    for funcPtr in list(funcPtrs.values()):
         parseFuncPtr(funcPtr, typeNameRemap)
     
-    for enum in enums:
-        parseEnum(enum, typeNameRemap, constants, typedefs)
+    for enum in list(enums.values()):
+        parseEnum(enum, typeNameRemap, enums, constants, typedefs)
     
-    for command in commands:
+    for command in list(commands.values()):
         parseCommand(command, typeNameRemap)
-    
-    with open("vulkan.nl", "w") as f:
-        f.write("import \"Windows\"") # Temporary
 
-        for alias in typealiases:
+    for feature in list(features.values()):
+        parseFeature(feature, typeNameRemap, enums)
+
+    for extension in list(extensions.values()):
+        parseExtenstion(extension, typeNameRemap, enums)
+
+    with open("vulkan/VulkanDefs.nl", "w") as f:
+        for alias in typealiases.values():
             f.write("typealias {} {};\n".format(alias.name, alias.type))
 
         f.write("\n")
 
-        for alias in typedefs:
+        for alias in typedefs.values():
             f.write("typedef {} {};\n".format(alias.name, alias.type))
 
         f.write("\n")
 
-        for struct in structures:
+        for struct in structures.values():
             assert struct.nlDecl != None
             f.write(struct.nlDecl)
             f.write("\n")
 
-        for enum in enums:
+        for enum in enums.values():
             assert enum.nlDecl != None
             f.write(enum.nlDecl)
             f.write("\n")
 
-        for const in constants:
+        for const in constants.values():
             assert const.nlDecl != None
             f.write(const.nlDecl)
 
         f.write("\n")
 
-        for funcPtr in funcPtrs:
+        for funcPtr in funcPtrs.values():
             assert funcPtr.nlDecl != None
             f.write(funcPtr.nlDecl)
 
         f.write("\n")
 
-        for command in commands:
+        for command in commands.values():
+            if command.alias != None:
+                continue
             assert command.nlDecl != None
             f.write(command.nlDecl)
 
