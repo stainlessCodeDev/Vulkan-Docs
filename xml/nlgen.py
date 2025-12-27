@@ -459,6 +459,7 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
         enum.name = typeNameRemap[enum.name]["name"]
         enums[enum.name] = enum
     else:
+        enums.pop(enum.name)
         enum.underlyingType = ""
         enum.name = ""
 
@@ -495,7 +496,7 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
             enum.members[enumValue.name] = enumValue
 
     memberDecl = "".join(["\t{} = {};\n".format(member.name, member.value) for member in enum])
-    enum.nlDecl = "enum {} {}\n{{\n{}}}\n".format(enum.name, "as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
+    enum.nlDecl = "enum {}{}\n{{\n{}}}\n".format(enum.name, " as {}".format(enum.underlyingType) if enum.underlyingType else "", memberDecl)
 
 def parseCommand(command, typeNameRemap):
     if command.alias != None:
