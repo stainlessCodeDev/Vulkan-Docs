@@ -6,6 +6,15 @@ from types import SimpleNamespace
 from dataclasses import dataclass, field
 
 @dataclass
+class GenOpts:
+    api: str = field(default=None)
+    platform: str = field(default=None)
+    nameFilter: list[str] = field(default_factory=list[str])
+
+    def noFilter(self):
+        return GenOpts(api=self.api, platform=self.platform)
+
+@dataclass
 class BaseObject:
     name: str = field(default="", init=False)
     type: str = field(default=None, init=False)
@@ -27,15 +36,21 @@ class BaseObject:
                 child.inferPlatform()
                 if child.platform != "":
                     self.platform = child.platform
+    
+    def isDisabled(self, genOpts = None):
+        if genOpts == None:
+            genOpts = GenOpts()
 
-    def isDisabled(self, api = None, platform = None):
-        if api != None and len(self.apis) > 0 and api not in self.apis:
+        if genOpts.api != None and len(self.apis) > 0 and genOpts.api not in self.apis:
             return True
-        elif platform != None and self.platform != platform:
+        elif genOpts.platform != None and self.platform != genOpts.platform:
             return True
         elif self.enabledCounter < 0:
             return True
         else:
+            for filter in genOpts.nameFilter:
+                if filter.casefold() in self.name.casefold():
+                    return True
             return False
 
     def setDisabled(self, disable):
@@ -44,7 +59,7 @@ class BaseObject:
         else:
             self.enabledCounter += 1
 
-    def toDecl(self, api, platform):
+    def toDecl(self, genOpts):
         pass
 
     def __iter__(self):
@@ -52,16 +67,16 @@ class BaseObject:
 
 @dataclass
 class Typedef(BaseObject):
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         return "typedef {} {};\n".format(self.name, self.type)
 
 @dataclass
 class Typealias(BaseObject):
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         return "typealias {} {};\n".format(self.name, self.type)
@@ -71,8 +86,8 @@ class EnumMember(BaseObject):
     value: str = field(default=None, init=False)
     isConst: bool = field(default=False, init=False)
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         value = self.value.lower().translate(str.maketrans("", "", "FfUuLl"))
@@ -90,19 +105,19 @@ class Enum(BaseObject):
         for member in self.members.values():
             yield member
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
-        memberDecl = "".join([m.toDecl(api, platform) for m in self])
+        memberDecl = "".join([m.toDecl(genOpts) for m in self])
         return "enum {}{}\n{{\n{}}}\n\n".format(self.name, " as {}".format(self.type) if self.type else "", memberDecl)
 
 @dataclass
 class Funcptr(BaseObject):
     arguments: list[str] = field(default_factory=list[str], init=False)
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in self.arguments if arg.name != ""])
@@ -110,8 +125,8 @@ class Funcptr(BaseObject):
 
 @dataclass
 class StructMember(BaseObject):
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts.noFilter()):
             return ""
         return "\t{} {};\n".format(self.type, self.name)
 
@@ -124,11 +139,11 @@ class Struct(BaseObject):
         for member in self.members.values():
             yield member
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
-        memberDecl = "".join([member.toDecl(api, platform) for member in self])
+        memberDecl = "".join([member.toDecl(genOpts) for member in self])
 
         if self.isUnion:
             return "union {}\n{{\n{}}}\n\n".format(self.name, memberDecl)
@@ -137,8 +152,8 @@ class Struct(BaseObject):
 
 @dataclass
 class CommandArgument(BaseObject):
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         if self.name == "":
@@ -156,14 +171,14 @@ class Command(BaseObject):
         for arg in self.args:
             yield arg
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         if self.alias != None:
             return ""
 
-        args = ", ".join(a for a in [arg.toDecl(api, platform) for arg in self] if a)
+        args = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
 
         # we disabled this, because even the loader docs says that the best strategy is to get addresses directly and store them yourself to get the best performance
         if False and api != None and api in self.export:
@@ -189,8 +204,8 @@ class Extension(BaseObject):
     number: int = field(default=None, init=False)
     commandsToLoad: list[Command] = field(default_factory=list[Command], init=False)
 
-    def toDecl(self, api, platform):
-        if self.isDisabled(api, platform):
+    def toDecl(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         if len(self.commandsToLoad) == 0:
@@ -681,51 +696,50 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, objec
                 type.setPlatform(extension.platform)
                 type.setDisabled(extension.isDisabled())
 
-def generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects):
-    filePlatform = platform.capitalize()
-    api = "vulkan"
+def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects):
+    filePlatform = genOpts.platform.capitalize()
 
     with open("vulkan/Vulkan{}.nl".format(filePlatform), "w") as f:
-        if platform == "Core":
-            platform = ""
+        if genOpts.platform == "Core":
+            genOpts.platform = ""
 
         for alias in typealiases.values():
             if alias.type in objects:
-                if objects[alias.type].isDisabled(api, platform):
+                if objects[alias.type].isDisabled(genOpts):
                     continue
 
-            f.write(alias.toDecl(api, platform))
+            f.write(alias.toDecl(genOpts))
 
         f.write("\n")
 
         for alias in typedefs.values():
-            f.write(alias.toDecl(api, platform))
+            f.write(alias.toDecl(genOpts))
 
         f.write("\n")
 
         for struct in structures.values():
-            f.write(struct.toDecl(api, platform))
+            f.write(struct.toDecl(genOpts))
 
         for enum in enums.values():
-            f.write(enum.toDecl(api, platform))
+            f.write(enum.toDecl(genOpts))
 
         for const in constants.values():
-            f.write(const.toDecl(api, platform))
+            f.write(const.toDecl(genOpts))
 
         f.write("\n")
 
         for funcPtr in funcPtrs.values():
-            f.write(funcPtr.toDecl(api, platform))
+            f.write(funcPtr.toDecl(genOpts))
 
         f.write("\n")
 
         for command in commands.values():
-            f.write(command.toDecl(api, platform))
+            f.write(command.toDecl(genOpts))
 
         f.write("\n")
 
         for extension in extensions.values():
-            f.write(extension.toDecl(api, platform))
+            f.write(extension.toDecl(genOpts))
 
 def main():
     treeRoot = etree.parse("vk.xml")
@@ -824,7 +838,8 @@ def main():
         object.inferPlatform()
 
     for platform in supportedPlatforms:
-        generateDefsForPlatform(platform, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
+        genOpts = GenOpts(api="vulkan", platform=platform, nameFilter=["video"])
+        generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!\nTotals:")
     print("  Typealiases: {}".format(len(typealiases)))
