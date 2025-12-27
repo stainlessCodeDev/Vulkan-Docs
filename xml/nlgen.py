@@ -163,7 +163,7 @@ class Command(BaseObject):
         if self.alias != None:
             return ""
 
-        args = ", ".join([arg.toDecl(api, platform) for arg in self])
+        args = ", ".join(a for a in [arg.toDecl(api, platform) for arg in self] if a)
 
         # we disabled this, because even the loader docs says that the best strategy is to get addresses directly and store them yourself to get the best performance
         if False and api != None and api in self.export:
