@@ -114,7 +114,7 @@ def fetchTypes(typesNode, typeNameRemap, typealiases, typedefs, structures, func
         if "alias" in typeNode.attrib:
             typeNameRemap[nameAttrib] = {"name": typeNode.attrib["alias"], "underlyingType": None}
             continue
-        
+
         if "category" in typeNode.attrib:
             match typeNode.attrib["category"]:
                 case "basetype":
@@ -195,7 +195,7 @@ def fetchEnums(enumsNode, typeNameRemap, enums):
     if "name" not in enumsNode.attrib:
         #WTF
         return
-    
+
     enum = SimpleNamespace()
     enum.name = enumsNode.attrib["name"]
     enum.node = enumsNode
@@ -206,11 +206,11 @@ def fetchCommands(commandsNode, typeNameRemap, commands):
     for commandNode in commandsNode:
         if commandNode.tag != "command":
             continue
-        
+
         if "api" in commandsNode.attrib:
             if "vulkan" not in commandNode.attrib["api"].split(","):
                 continue
-        
+
         aliasName = None
         name = ""
         if "alias" in commandNode.attrib:
@@ -237,7 +237,29 @@ def fetchFeatures(featureNode, typeNameRemap, features):
     features[feature.name] = feature
 
 def fetchExtensions(extensionsNode, typeNameRemap, extensions, supportedPlatforms):
-    pass
+    for extensionNode in extensionsNode:
+        if extensionNode.tag != "extension":
+            continue
+
+        if "platform" in extensionNode.attrib:
+            if extensionNode.attrib["platform"] not in supportedPlatforms:
+                continue
+
+        if "supported" in extensionNode.attrib:
+            apis = extensionNode.attrib["supported"].split(",")
+            if "disabled" in apis:
+                continue
+            elif "vulkan" not in apis:
+                continue
+
+        extension = SimpleNamespace()
+        extension.name = extensionNode.attrib["name"]
+        extension.kind = extensionNode.attrib["type"]
+        extension.number = int(extensionNode.attrib["number"])
+        extension.commandsToLoad = []
+        extension.node = extensionNode
+
+        extensions[extension.name] = extension
 
 def parseStruct(structure, typeNameRemap):
     #print("\nstruct {}".format(structure.name))
@@ -247,7 +269,7 @@ def parseStruct(structure, typeNameRemap):
         if "api" in memberNode.attrib:
             if "vulkan" not in memberNode.attrib["api"].split(","):
                 continue
-        
+
         member = SimpleNamespace()
         member.name = ""
         member.type = ""
@@ -255,7 +277,7 @@ def parseStruct(structure, typeNameRemap):
 
         #print("  {}".format(member))
         structure.members.append(member)
-    
+
     memberDecl = "".join(["\t{} {};\n".format(member.type, member.name) for member in structure.members])
     if structure.isUnion:
         structure.nlDecl = "union {}\n{{\n{}}}\n".format(structure.name, memberDecl)
@@ -387,11 +409,11 @@ def parseCommand(command, typeNameRemap):
             continue
 
     args = ", ".join(["{} {}".format(arg.type, arg.name) for arg in command.args if arg.name != ""])
-    command.nlDecl = "global ({}) => {} {};\n".format(args, command.type, command.name)
+    command.nlDecl = "global ({}) => {} {} = cast(void*)VulkanAPIStub;\n".format(args, command.type, command.name)
     #if "export" in command.node.attrib:
-    #    if "vulkan" in command.node.attrib["export"].split(","):
+        #if "vulkan" in command.node.attrib["export"].split(","):
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
-    #        command.nlDecl = "api {} ({}) => {} as \"{}\";\n".format(command.name, args, command.type, command.name)
+            #command.nlDecl = "api {} ({}) => {} as \"{}\";\n".format(command.name, args, command.type, command.name)
     #else:
         # these are not exported from loader dll, so we need some more logic here to figure out how to handle these
         # one way is to make them all into global variables and
@@ -427,21 +449,44 @@ def parseFeature(feature, typeNameRemap, enums):
                 if "extends" in itemNode.attrib:
                     parseEnumExtension(itemNode, typeNameRemap, enums, None)
 
-def parseExtenstion(extension, typeNameRemap, enums):
-    extensionNumber = extention.attrib["number"] - 1 # Why is it -1???
-
+def parseExtenstion(extension, typeNameRemap, enums, commands):
     for requireNode in extension.node:
         for itemNode in requireNode:
             if itemNode.tag == "enum":
                 if "extends" in itemNode.attrib:
-                    parseEnumExtension(itemNode, typeNameRemap, enums, extensionNumber)
+                    parseEnumExtension(itemNode, typeNameRemap, enums, extension.number - 1) # Why is it -1???
             elif itemNode.tag == "command":
                 extension.commandsToLoad.append(itemNode.attrib["name"])
-    
-    for commandsToLoad in extension.commandsToLoad:
-        # we need to generate some convenience function that allow the user to load api pointers for the extension all at once
-        # maybe even we can do a check or something, need to learn a bit more about extensions and if there anything special needs to be done to load one
+
+    extension.nlDecl = ""
+
+    if len(extension.commandsToLoad) == 0:
+        return
+
+    context = "VkInstance instance"
+    procAddr = "vkGetInstanceProcAddr(instance, \"{}\")"
+    if extension.kind == "device":
+        context = "VkDevice device"
+        procAddr = "vkGetDeviceProcAddr(device, \"{}\")"
+
+    extension.nlDecl = """
+proc Load{}({}) => bool
+{{
+"""
+    # maybe even we can do a check for extension existancce or something,
+    # need to learn a bit more about extensions and if there anything special needs to be done to load one
+    extension.nlDecl = extension.nlDecl.format(extension.name, context)
+
+    for commandToLoad in extension.commandsToLoad:
+        command = commands[commandToLoad]
+
+        if command.alias != None:
+            command = commands[command.alias]
+
+        extension.nlDecl += "    {} = {};\n".format(command.name, procAddr.format(commandToLoad))
         pass
+
+    extension.nlDecl += "    return true;\n}\n"
 
 def main():
     treeRoot = etree.parse("vk.xml")
@@ -485,7 +530,7 @@ def main():
         match registryNode.tag:
             case "types":
                 fetchTypes(registryNode, typeNameRemap, typealiases, typedefs, structures, funcPtrs)
-            case "enums":      
+            case "enums":
                 fetchEnums(registryNode, typeNameRemap, enums)
             case "commands":
                 fetchCommands(registryNode, typeNameRemap, commands)
@@ -499,10 +544,10 @@ def main():
 
     for funcPtr in list(funcPtrs.values()):
         parseFuncPtr(funcPtr, typeNameRemap)
-    
+
     for enum in list(enums.values()):
         parseEnum(enum, typeNameRemap, enums, constants, typedefs)
-    
+
     for command in list(commands.values()):
         parseCommand(command, typeNameRemap)
 
@@ -510,7 +555,7 @@ def main():
         parseFeature(feature, typeNameRemap, enums)
 
     for extension in list(extensions.values()):
-        parseExtenstion(extension, typeNameRemap, enums)
+        parseExtenstion(extension, typeNameRemap, enums, commands)
 
     with open("vulkan/VulkanDefs.nl", "w") as f:
         for alias in typealiases.values():
@@ -551,6 +596,10 @@ def main():
             assert command.nlDecl != None
             f.write(command.nlDecl)
 
+        for extension in extensions.values():
+            assert command.nlDecl != None
+            f.write(extension.nlDecl)
+
     print("Generated vulkan.nl:")
     print("  Typealiases: {}".format(len(typealiases)))
     print("  Typedefs: {}".format(len(typedefs)))
@@ -559,6 +608,7 @@ def main():
     print("  Constants: {}".format(len(constants)))
     print("  Funcptrs: {}".format(len(funcPtrs)))
     print("  Commands: {}".format(len(commands)))
+    print("  Extensions: {}".format(len(extensions)))
 
 if __name__ == '__main__':
     main()
