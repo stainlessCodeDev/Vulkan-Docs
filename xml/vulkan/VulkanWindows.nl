@@ -1,10 +1,12 @@
 include "VulkanCore.nl"
 include "VulkanWin32.nl"
+
+import "Lib"
 import "Windows"
 
 proc LoadVulkan() => bool
 {
-    HMODULE vulkan = LoadLibraryA("vulkan-1.dll");
+    HMODULE vulkan = LoadLibrary("vulkan-1.dll");
 
     if (vulkan == null)
         return false;

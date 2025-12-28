@@ -95,7 +95,7 @@ class EnumMember(BaseObject):
         if self.isConst:
             return "const {} = {};\n".format(self.name, value if self.type == None else "cast({}){}".format(self.type, value))
         else:
-            return "\t{} = {};\n".format(self.name, self.value)
+            return "    {} = {};\n".format(self.name, self.value)
 
 @dataclass
 class Enum(BaseObject):
@@ -128,7 +128,7 @@ class StructMember(BaseObject):
     def toDecl(self, genOpts):
         if self.isDisabled(genOpts.noFilter()):
             return ""
-        return "\t{} {};\n".format(self.type, self.name)
+        return "    {} {};\n".format(self.type, self.name)
 
 @dataclass
 class Struct(BaseObject):
@@ -192,7 +192,7 @@ class Command(BaseObject):
             # another way is to just emit the procedure typealiases for all of these and
             #command.nlDecl = "typealias {} ({}) => {};".format(command.name, args, command.type)
             #   * make application to create all of the globals and load them manually
-            return "global ({}) => {} {} = cast(void*)VulkanAPIStub;\n".format(args, self.type, self.name)
+            return "global ({}) => {} {} = cast(void*)&VulkanAPIStub;\n".format(args, self.type, self.name)
 
 @dataclass
 class Feature(BaseObject):
@@ -230,7 +230,7 @@ class Extension(BaseObject):
             if command.alias != None:
                 command = command.alias
 
-            result += "    {} = {};\n".format(command.name, procAddr.format(commandToLoad.name))
+            result += "    {} = cast(void*) {};\n".format(command.name, procAddr.format(commandToLoad.name))
             pass
 
         return result + "    return true;\n}\n\n"
