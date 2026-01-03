@@ -81,6 +81,8 @@ class Typealias(BaseObject):
 
         return "typealias {} {};\n".format(self.name, self.type)
 
+isNumber = re.compile("\\(?(~?\\d+\\.?\\d*)[FfUuLl]*\\)?", re.VERBOSE)
+
 @dataclass
 class EnumMember(BaseObject):
     value: str = field(default=None, init=False)
@@ -90,7 +92,11 @@ class EnumMember(BaseObject):
         if self.isDisabled(genOpts):
             return ""
 
-        value = self.value.lower().translate(str.maketrans("", "", "FfUuLl"))
+        value = isNumber.match(self.value)
+        if value:
+            value = value.groups()[0]
+        else:
+            value = self.value
 
         if self.isConst:
             return "const {} = {};\n".format(self.name, value if self.type == None else "cast({}){}".format(self.type, value))
@@ -647,11 +653,8 @@ def parseCommand(command, typeNameRemap, commands):
     if "export" in command.node.attrib:
         command.export = command.node.attrib["export"].split(",")
 
-def parseEnumExtension(itemNode, name, typeNameRemap, enums, extNumber):
-    if "alias" in itemNode.attrib:
-        return
-
-    extendsEnum: Enum = enums[typeNameRemap[itemNode.attrib["extends"]]]
+def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extNumber):
+    
     enumValue = EnumMember()
     enumValue.name = name
 
@@ -661,22 +664,33 @@ def parseEnumExtension(itemNode, name, typeNameRemap, enums, extNumber):
         enumValue.value = itemNode.attrib["value"]
     elif "alias" in itemNode.attrib:
         enumValue.value = itemNode.attrib["alias"]
-    else:
-        if "extnumber" in itemNode.attrib:
-            extNumber = int(itemNode.attrib["extnumber"]) # Why is it -1???
+    elif "extnumber" in itemNode.attrib:
+        extNumber = int(itemNode.attrib["extnumber"]) # Why is it -1???
         enumValue.value = str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
+    elif "offset" in itemNode.attrib and extNumber:
+        enumValue.value = str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
+    else:
+        return
 
-    extendsEnum.members[enumValue.name] = enumValue
+    if extendsEnum:
+        extendsEnum.members[enumValue.name] = enumValue
+    else:
+        enumValue.isConst = True
+        constants[enumValue.name] = enumValue
 
-def parseFeature(feature, typeNameRemap, enums):
+def parseFeature(feature, typeNameRemap, enums, constants):
     for requireNode in feature.node:
         for itemNode in requireNode:
             if itemNode.tag == "enum":
+                extendsEnum = None
+                name = None
                 if "extends" in itemNode.attrib:
                     name = itemNode.attrib["name"] # enum name trimming
-                    parseEnumExtension(itemNode, name, typeNameRemap, enums, None)
+                    extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]]
 
-def parseExtenstion(extension, typeNameRemap, enums, structures, commands, objects):
+                parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, None)
+
+def parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects):
     for requireNode in extension.node:
         for itemNode in requireNode:
             name = None
@@ -684,8 +698,11 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, objec
                 name = itemNode.attrib["name"] # enum name trimming
 
             if itemNode.tag == "enum":
+                extendsEnum = None
                 if "extends" in itemNode.attrib:
-                    parseEnumExtension(itemNode, name, typeNameRemap, enums, extension.number)
+                    extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]]
+
+                parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extension.number)
             elif itemNode.tag == "command":
                 command = commands[name]
                 extension.commandsToLoad.append(command)
@@ -829,10 +846,10 @@ def main():
         objects[command.name] = command
 
     for feature in list(features.values()):
-        parseFeature(feature, typeNameRemap, enums)
+        parseFeature(feature, typeNameRemap, enums, constants)
 
     for extension in list(extensions.values()):
-        parseExtenstion(extension, typeNameRemap, enums, structures, commands, objects)
+        parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects)
 
     for object in objects.values():
         object.inferPlatform()
