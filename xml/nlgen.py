@@ -9,10 +9,14 @@ from dataclasses import dataclass, field
 class GenOpts:
     api: str = field(default=None)
     platform: str = field(default=None)
+    supportedPlatforms: list[str] = field(default_factory=list[str])
     nameFilter: list[str] = field(default_factory=list[str])
 
-    def noFilter(self):
-        return GenOpts(api=self.api, platform=self.platform)
+    def ignoreNameFilter(self):
+        return GenOpts(api=self.api, platform=self.platform, supportedPlatforms=self.supportedPlatforms, nameFilter=[])
+
+    def ignorePlatform(self):
+        return GenOpts(api=self.api, platform=None, supportedPlatforms=self.supportedPlatforms, nameFilter=self.nameFilter)
 
 @dataclass
 class BaseObject:
@@ -20,7 +24,7 @@ class BaseObject:
     type: str = field(default=None, init=False)
     node: etree.Element = field(default=None, init=False)
 
-    platform: str = field(default="", init=False)
+    platform: str = field(default="Core", init=False)
     enabledCounter: int = field(default=0, init=False)
     apis: list[str] = field(default_factory=list[str], init=False)
 
@@ -31,27 +35,28 @@ class BaseObject:
             child.setPlatform(platform)
 
     def inferPlatform(self):
-        if self.platform == "":
+        if self.platform == "Core":
             for child in self:
                 child.inferPlatform()
-                if child.platform != "":
+                if child.platform != "Core":
                     self.platform = child.platform
-    
-    def isDisabled(self, genOpts = None):
-        if genOpts == None:
-            genOpts = GenOpts()
 
-        if genOpts.api != None and len(self.apis) > 0 and genOpts.api not in self.apis:
+    def isDisabled(self, genOpts = None):
+        if self.enabledCounter < 0:
+            return True
+        elif genOpts == None:
+            return False
+        elif genOpts.api != None and len(self.apis) > 0 and genOpts.api not in self.apis:
             return True
         elif genOpts.platform != None and self.platform != genOpts.platform:
             return True
-        elif self.enabledCounter < 0:
+        elif genOpts.platform == None and self.platform not in genOpts.supportedPlatforms:
             return True
         else:
             for filter in genOpts.nameFilter:
                 if filter.casefold() in self.name.casefold():
                     return True
-            return False
+        return False
 
     def setDisabled(self, disable):
         if disable:
@@ -132,7 +137,7 @@ class Funcptr(BaseObject):
 @dataclass
 class StructMember(BaseObject):
     def toDecl(self, genOpts):
-        if self.isDisabled(genOpts.noFilter()):
+        if self.isDisabled(genOpts.ignoreNameFilter()):
             return ""
         return "    {} {};\n".format(self.type, self.name)
 
@@ -167,11 +172,21 @@ class CommandArgument(BaseObject):
 
         return "{} {}".format(self.type, self.name)
 
+    def toDefn(self, genOpts):
+        if self.isDisabled(genOpts):
+            return ""
+
+        if self.name == "":
+            return ""
+
+        return self.name
+
 @dataclass
 class Command(BaseObject):
     args: list[CommandArgument] = field(default_factory=list[CommandArgument], init=False)
     alias: str = field(default=None, init=False)
     export: list[str] = field(default_factory=list[str], init=False)
+    category: str = field(default="instance", init=False)
 
     def __iter__(self):
         for arg in self.args:
@@ -184,21 +199,55 @@ class Command(BaseObject):
         if self.alias != None:
             return ""
 
-        args = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
+        argsDecl = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
+        argsDefn = ", ".join(a for a in [arg.toDefn(genOpts) for arg in self] if a)
 
         # we disabled this, because even the loader docs says that the best strategy is to get addresses directly and store them yourself to get the best performance
-        if False and api != None and api in self.export:
+        if False and genOpts.api != None and genOpts.api in self.export:
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
             return "api {} ({}) => {} as \"{}\";\n".format(self.name, args, self.type, self.name)
+        elif self.category in ["instance", "physicalDevice"]:
+            return f"""global ({argsDecl}) => {self.type} {self.name} = &{self.name}Stub;\n
+@Private
+callback {self.name}Stub({argsDecl}) => {self.type}\n{{
+    {self.name} = vkGetInstanceProcAddr(instance, "{self.name}");
+    if ({self.name} == null)\n    {{
+        Assert(false, "Vulkan not loaded!\\n");
+        {self.name} = cast(void*)&{self.name}Stub;
+        return{f" cast({self.type})0" if self.type != "void" else ""};
+    }}
+
+    return {self.name}({argsDefn});
+}}\n\n"""
         else:
-            # these are not exported from loader dll, so we need some more logic here to figure out how to handle these
-            # one way is to make them all into global variables and
-            #   * make loader procedures per extension (they should be in the xml) that the application can choose to load if the extension is present
-            #   * make them into stubs that return an error by default, if they aren't loaded
-            # another way is to just emit the procedure typealiases for all of these and
-            #command.nlDecl = "typealias {} ({}) => {};".format(command.name, args, command.type)
-            #   * make application to create all of the globals and load them manually
-            return "global ({}) => {} {} = cast(void*)&VulkanAPIStub;\n".format(args, self.type, self.name)
+            return ""
+
+    def toStructMember(self, genOpts):
+        if self.isDisabled(genOpts.ignorePlatform()):
+            return ""
+
+        if self.alias != None:
+            return ""
+
+        argsDecl = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
+        argsDefn = ", ".join(a for a in [arg.toDefn(genOpts) for arg in self] if a)
+
+        if self.category not in ["instance", "physicalDevice"]:
+            return "    ({}) => {} {};\n".format(argsDecl, self.type, self.name)
+        else:
+            return ""
+
+    def toLoad(self, genOpts):
+        if self.isDisabled(genOpts):
+            return ""
+
+        if self.alias != None:
+            return ""
+
+        if self.category not in ["instance", "physicalDevice", "extension"]:
+            return f"    table.{self.name} = vkGetDeviceProcAddr(device, \"{self.name}\");\n"
+        else:
+            return ""
 
 @dataclass
 class Feature(BaseObject):
@@ -217,27 +266,31 @@ class Extension(BaseObject):
         if len(self.commandsToLoad) == 0:
             return ""
 
-        context = "VkInstance instance"
-        procAddr = "vkGetInstanceProcAddr(instance, \"{}\")"
-        if self.kind == "device":
-            context = "VkDevice device"
-            procAddr = "vkGetDeviceProcAddr(device, \"{}\")"
+        if self.kind == "instance":
+            return ""
 
-        result = """proc Load{}({}) => bool
+        assert self.kind == "device"
+
+        result = f"""proc Load{self.name}(VkDevice device, DevicePtrTable* table) => bool
 {{
 """
-        # maybe even we can do a check for extension existancce or something,
+        # maybe even we can do a check for extension existance or something,
         # need to learn a bit more about extensions and if there anything special needs to be done to load one
-        result = result.format(self.name, context)
 
+        commandCounter = 0
         for commandToLoad in self.commandsToLoad:
             command = commandToLoad
 
             if command.alias != None:
                 command = command.alias
+                result += f"    //table.{command.name} = cast(void*) vkGetDeviceProcAddr(device, \"{commandToLoad.name}\"); // aliased\n"
+                continue
 
-            result += "    {} = cast(void*) {};\n".format(command.name, procAddr.format(commandToLoad.name))
-            pass
+            result += f"    table.{command.name} = cast(void*) vkGetDeviceProcAddr(device, \"{commandToLoad.name}\");\n"
+            commandCounter += 1
+
+        if commandCounter == 0:
+            return ""
 
         return result + "    return true;\n}\n\n"
 
@@ -650,11 +703,14 @@ def parseCommand(command, typeNameRemap, commands):
         else:
             continue
 
+    if len(command.args) > 0 and command.args[0].name in ["instance", "physicalDevice", "device", "queue", "commandBuffer"]:
+        command.category = command.args[0].name
+
     if "export" in command.node.attrib:
         command.export = command.node.attrib["export"].split(",")
 
 def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extNumber):
-    
+
     enumValue = EnumMember()
     enumValue.name = name
 
@@ -706,6 +762,8 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
             elif itemNode.tag == "command":
                 command = commands[name]
                 extension.commandsToLoad.append(command)
+                if extension.kind != "instance":
+                    command.category = "extension"
                 command.setPlatform(extension.platform)
                 command.setDisabled(extension.isDisabled())
             elif itemNode.tag == "type":
@@ -717,8 +775,8 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
     filePlatform = genOpts.platform.capitalize()
 
     with open("vulkan/Vulkan{}.nl".format(filePlatform), "w") as f:
-        if genOpts.platform == "Core":
-            genOpts.platform = ""
+        #if genOpts.platform == "Core":
+        #    genOpts.platform = ""
 
         for alias in typealiases.values():
             if alias.type in objects:
@@ -753,7 +811,19 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
         for command in commands.values():
             f.write(command.toDecl(genOpts))
 
-        f.write("\n")
+        if genOpts.platform == "Core":
+            f.write("struct VkDevicePtrTable\n{\n")
+
+            for command in commands.values():
+                f.write(command.toStructMember(genOpts))
+
+            f.write("}\n\n")
+
+        f.write(f"proc vkLoadDevicePtrTable{filePlatform}(VkDevice device, DevicePtrTable* table) => void\n{{\n")
+
+        for command in commands.values():
+            f.write(command.toLoad(genOpts))
+        f.write("}\n\n")
 
         for extension in extensions.values():
             f.write(extension.toDecl(genOpts))
@@ -855,7 +925,7 @@ def main():
         object.inferPlatform()
 
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, nameFilter=["video"])
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video"])
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!\nTotals:")
