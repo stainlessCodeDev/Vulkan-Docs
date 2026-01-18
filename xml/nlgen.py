@@ -11,6 +11,7 @@ class GenOpts:
     platform: str = field(default=None)
     supportedPlatforms: list[str] = field(default_factory=list[str])
     nameFilter: list[str] = field(default_factory=list[str])
+    vendorFilter: list[str] = field(default_factory=list[str])
 
     def ignoreNameFilter(self):
         return GenOpts(api=self.api, platform=self.platform, supportedPlatforms=self.supportedPlatforms, nameFilter=[])
@@ -25,8 +26,9 @@ class BaseObject:
     node: etree.Element = field(default=None, init=False)
 
     platform: str = field(default="Core", init=False)
-    enabledCounter: int = field(default=0, init=False)
+    #enabledCounter: int = field(default=0, init=False)
     apis: list[str] = field(default_factory=list[str], init=False)
+    users: list[BaseObject] = field(default_factory=list[str], init=False)
 
     def setPlatform(self, platform):
         self.platform = platform
@@ -42,7 +44,9 @@ class BaseObject:
                     self.platform = child.platform
 
     def isDisabled(self, genOpts = None):
-        if self.enabledCounter < 0:
+        if self.isDisabledImpl(genOpts):
+            return True
+        elif not isinstance(self, Extension) and not isinstance(self, Feature) and all([user.isDisabled(genOpts) for user in self.users]):
             return True
         elif genOpts == None:
             return False
@@ -58,11 +62,14 @@ class BaseObject:
                     return True
         return False
 
-    def setDisabled(self, disable):
-        if disable:
-            self.enabledCounter -= 1
-        else:
-            self.enabledCounter += 1
+    def isDisabledImpl(self, genOpts):
+        return False
+
+    #def setDisabled(self, disable):
+    #    if disable:
+    #        self.enabledCounter -= 1
+    #    else:
+    #        self.enabledCounter += 1
 
     def toDecl(self, genOpts):
         pass
@@ -259,6 +266,7 @@ class Extension(BaseObject):
     kind: str = field(default=None, init=False)
     number: int = field(default=None, init=False)
     commandsToLoad: list[Command] = field(default_factory=list[Command], init=False)
+    vendor: str = field(default=None, init=False)
 
     def toDecl(self, genOpts):
         if self.isDisabled(genOpts):
@@ -285,7 +293,7 @@ class Extension(BaseObject):
 
             if command.alias != None:
                 command = command.alias
-                result += f"    // {load.format(command.name, commandToLoad.name)} //aliased\n"
+                result += f"    //{load.format(command.name, commandToLoad.name)} //aliased\n"
                 continue
 
             result += f"    {load.format(command.name, commandToLoad.name)}\n"
@@ -295,6 +303,13 @@ class Extension(BaseObject):
             return ""
 
         return result + "    return true;\n}\n\n"
+
+    def isDisabledImpl(self, genOpts):
+        if "disabled" in self.apis:
+            return True
+        elif self.vendor and len(genOpts.vendorFilter) > 0 and self.vendor not in genOpts.vendorFilter:
+            return True
+        return False
 
 def iterMixed(elem):
     if elem.text:
@@ -557,8 +572,9 @@ def fetchExtensions(extensionsNode, typeNameRemap, extensions):
 
         if "supported" in extensionNode.attrib:
             extension.apis = extensionNode.attrib["supported"].split(",")
-            if "disabled" in extension.apis:
-                extension.setDisabled(True)
+
+        if "author" in extensionNode.attrib:
+            extension.vendor = extensionNode.attrib["author"]
 
         extensions[extension.name] = extension
 
@@ -581,6 +597,7 @@ def parseStruct(structure: Struct, typeNameRemap):
 
         parseVarDecl(memberNode, typeNameRemap, member)
         structure.members[member.name] = member
+        member.users.append(structure)
 
 def parseFuncPtr(funcPtr, typeNameRemap):
     state = "return"
@@ -619,6 +636,8 @@ def parseFuncPtr(funcPtr, typeNameRemap):
         elif state == "arguments":
             if tok.kind in [Tok.COMMA, Tok.SEMICOLON]:
                 arguments.append(argument)
+                argument.users.append(funcPtr)
+
                 argument = CommandArgument()
                 argument.name = ""
                 argument.type = ""
@@ -650,13 +669,13 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
     if kind != "constants":
         enums.pop(enum.name)
 
+        enum.name = typeNameRemap[enum.name]
+        enums[enum.name] = enum
+
         if enum.name in typedefs:
             alias = typedefs[enum.name]
             typedefs.pop(enum.name)
             enum.type = typeNameRemap[alias.type]
-
-        enum.name = typeNameRemap[enum.name]
-        enums[enum.name] = enum
     else:
         enums.pop(enum.name)
         enum.type = ""
@@ -685,6 +704,7 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
             constants[enumValue.name] = enumValue
         else:
             enum.members[enumValue.name] = enumValue
+            enumValue.users.append(enum)
 
 def parseCommand(command, typeNameRemap, commands):
     if command.alias != None:
@@ -702,6 +722,7 @@ def parseCommand(command, typeNameRemap, commands):
 
             parseVarDecl(node, typeNameRemap, arg)
             command.args.append(arg)
+            arg.users.append(command)
         else:
             continue
 
@@ -731,29 +752,37 @@ def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, ex
         return constants[name]
 
     if extendsEnum:
-        extendsEnum.members[enumValue.name] = enumValue
+        extendsEnum.members[name] = enumValue
     else:
         enumValue.isConst = True
-        constants[enumValue.name] = enumValue
+        constants[name] = enumValue
 
     return enumValue
 
-def parseFeature(feature, typeNameRemap, enums, constants):
+def parseFeature(feature, typeNameRemap, objects, enums, constants):
     for requireNode in feature.node:
         if requireNode.tag != "require":
             continue
 
         for itemNode in requireNode:
+            name = None
+            if "name" in itemNode.attrib:
+                name = itemNode.attrib["name"] # enum name trimming
+
             if itemNode.tag == "enum":
                 extendsEnum = None
-                name = None
-                if "name" in itemNode.attrib:
-                    name = itemNode.attrib["name"] # enum name trimming
 
                 if "extends" in itemNode.attrib:
                     extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]]
 
-                parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, None)
+                value = parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, None)
+                value.users.append(feature)
+            elif itemNode.tag == "type" and name in typeNameRemap:
+                object = objects[typeNameRemap[name]]
+                object.users.append(feature)
+            elif itemNode.tag == "command":
+                object = objects[name]
+                object.users.append(feature)
 
 def parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects):
     for requireNode in extension.node:
@@ -772,7 +801,8 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
 
                 value = parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extension.number)
                 value.setPlatform(extension.platform)
-                value.setDisabled(extension.isDisabled())
+                #value.setDisabled(extension.isDisabled())
+                value.users.append(extension)
             elif itemNode.tag == "command":
                 command = commands[name]
                 extension.commandsToLoad.append(command)
@@ -781,11 +811,13 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
                 else:
                     command.category = "device_extension"
                 command.setPlatform(extension.platform)
-                command.setDisabled(extension.isDisabled())
+                #command.setDisabled(extension.isDisabled())
+                command.users.append(extension)
             elif itemNode.tag == "type":
                 type = objects[typeNameRemap[name]]
                 type.setPlatform(extension.platform)
-                type.setDisabled(extension.isDisabled())
+                #type.setDisabled(extension.isDisabled())
+                type.users.append(extension)
 
 def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects):
     filePlatform = genOpts.platform.capitalize()
@@ -928,7 +960,7 @@ def main():
         objects[command.name] = command
 
     for feature in list(features.values()):
-        parseFeature(feature, typeNameRemap, enums, constants)
+        parseFeature(feature, typeNameRemap, objects, enums, constants)
 
     for extension in list(extensions.values()):
         parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects)
@@ -937,18 +969,10 @@ def main():
         object.inferPlatform()
 
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"])
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"], vendorFilter=["KHR", "EXT"])
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
-    print("Generated vulkan module successfully!\nTotals:")
-    print("  Typealiases: {}".format(len(typealiases)))
-    print("  Typedefs: {}".format(len(typedefs)))
-    print("  Structs: {}".format(len(structures)))
-    print("  Enums: {}".format(len(enums)))
-    print("  Constants: {}".format(len(constants)))
-    print("  Funcptrs: {}".format(len(funcPtrs)))
-    print("  Commands: {}".format(len(commands)))
-    print("  Extensions: {}".format(len(extensions)))
+    print("Generated vulkan module successfully!")
 
 if __name__ == '__main__':
     main()
