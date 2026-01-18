@@ -202,11 +202,12 @@ class Command(BaseObject):
         argsDecl = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
         argsDefn = ", ".join(a for a in [arg.toDefn(genOpts) for arg in self] if a)
 
-        # we disabled this, because even the loader docs says that the best strategy is to get addresses directly and store them yourself to get the best performance
-        if False and genOpts.api != None and genOpts.api in self.export:
+        # genOpts.api != None and genOpts.api in self.export
+
+        if self.category in ["instance", "physicalDevice", "instance_extension"]:
             # these are directly exported from vulkan-1.dll, so we import them via linking, we should trim the vk off of the name [2:]
-            return "api {} ({}) => {} as \"{}\";\n".format(self.name, args, self.type, self.name)
-        elif self.category in ["instance", "physicalDevice"]:
+            return f"global ({argsDecl}) => {self.type} {self.name} = cast(void*)&VulkanAPIStub;\n"
+        elif False:
             return f"""global ({argsDecl}) => {self.type} {self.name} = &{self.name}Stub;\n
 @Private
 callback {self.name}Stub({argsDecl}) => {self.type}\n{{
@@ -222,8 +223,8 @@ callback {self.name}Stub({argsDecl}) => {self.type}\n{{
         else:
             return ""
 
-    def toStructMember(self, genOpts):
-        if self.isDisabled(genOpts.ignorePlatform()):
+    def toDeviceTableMember(self, genOpts):
+        if self.isDisabled(genOpts):
             return ""
 
         if self.alias != None:
@@ -232,20 +233,20 @@ callback {self.name}Stub({argsDecl}) => {self.type}\n{{
         argsDecl = ", ".join(a for a in [arg.toDecl(genOpts) for arg in self] if a)
         argsDefn = ", ".join(a for a in [arg.toDefn(genOpts) for arg in self] if a)
 
-        if self.category not in ["instance", "physicalDevice"]:
+        if self.category not in ["instance", "physicalDevice", "instance_extension"]:
             return "    ({}) => {} {};\n".format(argsDecl, self.type, self.name)
         else:
             return ""
 
-    def toLoad(self, genOpts):
+    def toDeviceTableLoad(self, genOpts):
         if self.isDisabled(genOpts):
             return ""
 
         if self.alias != None:
             return ""
 
-        if self.category not in ["instance", "physicalDevice", "extension"]:
-            return f"    table.{self.name} = vkGetDeviceProcAddr(device, \"{self.name}\");\n"
+        if self.category not in ["instance", "physicalDevice", "instance_extension", "device_extension"]:
+            return f"    table.{self.name} = cast(void*) vkGetDeviceProcAddr(device, \"{self.name}\");\n"
         else:
             return ""
 
@@ -266,12 +267,13 @@ class Extension(BaseObject):
         if len(self.commandsToLoad) == 0:
             return ""
 
+        args = "VkDevice device, VkDevicePtrTable* table"
+        load = "table.{} = cast(void*) vkGetDeviceProcAddr(device, \"{}\");"
         if self.kind == "instance":
-            return ""
+            args = "VkInstance instance"
+            load = "{} = cast(void*) vkGetInstanceProcAddr(instance, \"{}\");"
 
-        assert self.kind == "device"
-
-        result = f"""proc Load{self.name}(VkDevice device, DevicePtrTable* table) => bool
+        result = f"""proc Load{self.name}({args}) => bool
 {{
 """
         # maybe even we can do a check for extension existance or something,
@@ -283,10 +285,10 @@ class Extension(BaseObject):
 
             if command.alias != None:
                 command = command.alias
-                result += f"    //table.{command.name} = cast(void*) vkGetDeviceProcAddr(device, \"{commandToLoad.name}\"); // aliased\n"
+                result += f"    // {load.format(command.name, commandToLoad.name)} //aliased\n"
                 continue
 
-            result += f"    table.{command.name} = cast(void*) vkGetDeviceProcAddr(device, \"{commandToLoad.name}\");\n"
+            result += f"    {load.format(command.name, commandToLoad.name)}\n"
             commandCounter += 1
 
         if commandCounter == 0:
@@ -726,7 +728,7 @@ def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, ex
     elif "offset" in itemNode.attrib and extNumber:
         enumValue.value = str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
     else:
-        return
+        return constants[name]
 
     if extendsEnum:
         extendsEnum.members[enumValue.name] = enumValue
@@ -734,20 +736,30 @@ def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, ex
         enumValue.isConst = True
         constants[enumValue.name] = enumValue
 
+    return enumValue
+
 def parseFeature(feature, typeNameRemap, enums, constants):
     for requireNode in feature.node:
+        if requireNode.tag != "require":
+            continue
+
         for itemNode in requireNode:
             if itemNode.tag == "enum":
                 extendsEnum = None
                 name = None
-                if "extends" in itemNode.attrib:
+                if "name" in itemNode.attrib:
                     name = itemNode.attrib["name"] # enum name trimming
+
+                if "extends" in itemNode.attrib:
                     extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]]
 
                 parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, None)
 
 def parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects):
     for requireNode in extension.node:
+        if requireNode.tag != "require":
+            continue
+
         for itemNode in requireNode:
             name = None
             if "name" in itemNode.attrib:
@@ -758,12 +770,16 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
                 if "extends" in itemNode.attrib:
                     extendsEnum = enums[typeNameRemap[itemNode.attrib["extends"]]]
 
-                parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extension.number)
+                value = parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extension.number)
+                value.setPlatform(extension.platform)
+                value.setDisabled(extension.isDisabled())
             elif itemNode.tag == "command":
                 command = commands[name]
                 extension.commandsToLoad.append(command)
-                if extension.kind != "instance":
-                    command.category = "extension"
+                if extension.kind == "instance":
+                    command.category = "instance_extension"
+                else:
+                    command.category = "device_extension"
                 command.setPlatform(extension.platform)
                 command.setDisabled(extension.isDisabled())
             elif itemNode.tag == "type":
@@ -775,9 +791,6 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
     filePlatform = genOpts.platform.capitalize()
 
     with open("vulkan/Vulkan{}.nl".format(filePlatform), "w") as f:
-        #if genOpts.platform == "Core":
-        #    genOpts.platform = ""
-
         for alias in typealiases.values():
             if alias.type in objects:
                 if objects[alias.type].isDisabled(genOpts):
@@ -811,18 +824,17 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
         for command in commands.values():
             f.write(command.toDecl(genOpts))
 
-        if genOpts.platform == "Core":
-            f.write("struct VkDevicePtrTable\n{\n")
-
-            for command in commands.values():
-                f.write(command.toStructMember(genOpts))
-
-            f.write("}\n\n")
-
-        f.write(f"proc vkLoadDevicePtrTable{filePlatform}(VkDevice device, DevicePtrTable* table) => void\n{{\n")
+        f.write(f"\nstruct VkDevicePtrTable{filePlatform}\n{{\n")
 
         for command in commands.values():
-            f.write(command.toLoad(genOpts))
+            f.write(command.toDeviceTableMember(genOpts))
+
+        f.write("}\n")
+
+        f.write(f"\nproc vkLoadDevicePtrTable{filePlatform}(VkDevice device, DevicePtrTable* table) => void\n{{\n")
+
+        for command in commands.values():
+            f.write(command.toDeviceTableLoad(genOpts))
         f.write("}\n\n")
 
         for extension in extensions.values():
@@ -925,7 +937,7 @@ def main():
         object.inferPlatform()
 
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video"])
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"])
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!\nTotals:")
