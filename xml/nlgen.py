@@ -101,6 +101,9 @@ class EnumMember(BaseObject):
     isConst: bool = field(default=False, init=False)
 
     def toDecl(self, genOpts):
+        if not self.isConst:
+            genOpts = genOpts.ignorePlatform()
+
         if self.isDisabled(genOpts):
             return ""
 
@@ -230,6 +233,18 @@ callback {self.name}Stub({argsDecl}) => {self.type}\n{{
         else:
             return ""
 
+    def toInstanceTableLoad(self, genOpts):
+        if self.isDisabled(genOpts):
+            return ""
+
+        if self.alias != None:
+            return ""
+
+        if self.category in ["instance", "physicalDevice", "instance_extension"]:
+            return f"    {self.name} = cast(void*) vkGetInstanceProcAddr(instance, \"{self.name}\");\n"
+        else:
+            return ""
+
     def toDeviceTableMember(self, genOpts):
         if self.isDisabled(genOpts):
             return ""
@@ -275,7 +290,7 @@ class Extension(BaseObject):
         if len(self.commandsToLoad) == 0:
             return ""
 
-        args = "VkDevice device, VkDevicePtrTable* table"
+        args = f"VkDevice device, VkDevicePtrTable{genOpts.platform.capitalize()}* table"
         load = "table.{} = cast(void*) vkGetDeviceProcAddr(device, \"{}\");"
         if self.kind == "instance":
             args = "VkInstance instance"
@@ -381,7 +396,7 @@ def tokenizeDecl(elem):
             # XML element (name, type, etc.)
             yield SimpleNamespace(kind=part.tag, value=part.text.strip())
 
-def parseVarDecl(objNode, typeNameRemap, obj):
+def parseVarDecl(objNode, typeNameRemap, obj, objects):
     obj.type = ""
     for tok in tokenizeDecl(objNode):
         if tok.kind == Tok.COMMA:
@@ -392,6 +407,8 @@ def parseVarDecl(objNode, typeNameRemap, obj):
             continue
         elif tok.kind == "type":
             obj.type += " " + typeNameRemap[tok.value]
+            if typeNameRemap[tok.value] in objects:
+                objects[typeNameRemap[tok.value]].users.append(obj)
             continue
         elif tok.kind == "enum":
             obj.type += " " + tok.value
@@ -578,14 +595,14 @@ def fetchExtensions(extensionsNode, typeNameRemap, extensions):
 
         extensions[extension.name] = extension
 
-def parseAlias(alias, typeNameRemap):
+def parseAlias(alias, typeNameRemap, objects):
     if alias.node.text and "typedef" in alias.node.text:
-        parseVarDecl(alias.node, typeNameRemap, alias)
+        parseVarDecl(alias.node, typeNameRemap, alias, objects)
 
     if alias.type in typeNameRemap:
         alias.type = typeNameRemap[alias.type]
 
-def parseStruct(structure: Struct, typeNameRemap):
+def parseStruct(structure: Struct, typeNameRemap, objects):
     for memberNode in structure.node:
         if memberNode.tag != "member":
             continue
@@ -595,11 +612,11 @@ def parseStruct(structure: Struct, typeNameRemap):
         if "api" in memberNode.attrib:
             member.apis = memberNode.attrib["api"].split(",")
 
-        parseVarDecl(memberNode, typeNameRemap, member)
+        parseVarDecl(memberNode, typeNameRemap, member, objects)
         structure.members[member.name] = member
         member.users.append(structure)
 
-def parseFuncPtr(funcPtr, typeNameRemap):
+def parseFuncPtr(funcPtr, typeNameRemap, objects):
     state = "return"
     returnType = ""
     arguments = []
@@ -617,10 +634,12 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                returnType = " ".join([returnType, typeNameRemap[tok.value.strip()]]).strip()
+                returnType = " ".join([returnType, typeNameRemap[tok.value]]).strip()
+                if typeNameRemap[tok.value] in objects:
+                    objects[typeNameRemap[tok.value]].users.append(argument)
                 continue
             elif tok.kind == "enum":
-                returnType = " ".join([returnType, tok.value.strip()]).strip()
+                returnType = " ".join([returnType, tok.value]).strip()
                 continue
             else:
                 returnType = " ".join([returnType, tok.value]).strip()
@@ -644,10 +663,12 @@ def parseFuncPtr(funcPtr, typeNameRemap):
             elif tok.kind == Tok.KEYWORD:
                 continue
             elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                argument.type = " ".join([argument.type, typeNameRemap[tok.value.strip()]]).strip()
+                argument.type = " ".join([argument.type, typeNameRemap[tok.value]]).strip()
+                if typeNameRemap[tok.value] in objects:
+                    objects[typeNameRemap[tok.value]].users.append(argument)
                 continue
             elif tok.kind == "enum":
-                argument.type = " ".join([argument.type, tok.value.strip()]).strip()
+                argument.type = " ".join([argument.type, tok.value]).strip()
                 continue
             elif tok.kind == Tok.IDENT:
                 argument.name = tok.value
@@ -706,28 +727,29 @@ def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
             enum.members[enumValue.name] = enumValue
             enumValue.users.append(enum)
 
-def parseCommand(command, typeNameRemap, commands):
+def parseCommand(command, typeNameRemap, commands, objects):
     if command.alias != None:
         command.alias = commands[command.alias]
         return
 
     for node in command.node:
         if node.tag == "proto":
-            parseVarDecl(node, typeNameRemap, command)
+            parseVarDecl(node, typeNameRemap, command, objects)
         elif node.tag == "param":
             arg = CommandArgument()
 
             if "api" in node.attrib:
                 arg.apis = node.attrib["api"].split(",")
 
-            parseVarDecl(node, typeNameRemap, arg)
+            parseVarDecl(node, typeNameRemap, arg, objects)
             command.args.append(arg)
             arg.users.append(command)
         else:
             continue
 
     if len(command.args) > 0 and command.args[0].name in ["instance", "physicalDevice", "device", "queue", "commandBuffer"]:
-        command.category = command.args[0].name
+        if command.name != "vkGetDeviceProcAddr":
+            command.category = command.args[0].name
 
     if "export" in command.node.attrib:
         command.export = command.node.attrib["export"].split(",")
@@ -801,7 +823,6 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
 
                 value = parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, extension.number)
                 value.setPlatform(extension.platform)
-                #value.setDisabled(extension.isDisabled())
                 value.users.append(extension)
             elif itemNode.tag == "command":
                 command = commands[name]
@@ -811,12 +832,10 @@ def parseExtenstion(extension, typeNameRemap, enums, structures, commands, const
                 else:
                     command.category = "device_extension"
                 command.setPlatform(extension.platform)
-                #command.setDisabled(extension.isDisabled())
                 command.users.append(extension)
             elif itemNode.tag == "type":
                 type = objects[typeNameRemap[name]]
                 type.setPlatform(extension.platform)
-                #type.setDisabled(extension.isDisabled())
                 type.users.append(extension)
 
 def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects):
@@ -855,6 +874,12 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
 
         for command in commands.values():
             f.write(command.toDecl(genOpts))
+        
+        f.write(f"\nproc vkLoadInstancePtrTable{filePlatform}(VkInstance instance) => void\n{{\n")
+
+        for command in commands.values():
+            f.write(command.toInstanceTableLoad(genOpts))
+        f.write("}\n\n")
 
         f.write(f"\nstruct VkDevicePtrTable{filePlatform}\n{{\n")
 
@@ -863,7 +888,7 @@ def generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structure
 
         f.write("}\n")
 
-        f.write(f"\nproc vkLoadDevicePtrTable{filePlatform}(VkDevice device, DevicePtrTable* table) => void\n{{\n")
+        f.write(f"\nproc vkLoadDevicePtrTable{filePlatform}(VkDevice device, VkDevicePtrTable{filePlatform}* table) => void\n{{\n")
 
         for command in commands.values():
             f.write(command.toDeviceTableLoad(genOpts))
@@ -936,19 +961,19 @@ def main():
         typeNameRemap[alias] = newAlias
 
     for alias in typealiases.values():
-        parseAlias(alias, typeNameRemap)
+        parseAlias(alias, typeNameRemap, objects)
         objects[alias.name] = alias
 
     for alias in typedefs.values():
-        parseAlias(alias, typeNameRemap)
+        parseAlias(alias, typeNameRemap, objects)
         objects[alias.name] = alias
 
     for structure in list(structures.values()):
-        parseStruct(structure, typeNameRemap)
+        parseStruct(structure, typeNameRemap, objects)
         objects[structure.name] = structure
 
     for funcPtr in list(funcPtrs.values()):
-        parseFuncPtr(funcPtr, typeNameRemap)
+        parseFuncPtr(funcPtr, typeNameRemap, objects)
         objects[funcPtr.name] = funcPtr
 
     for enum in list(enums.values()):
@@ -956,7 +981,7 @@ def main():
         objects[enum.name] = enum
 
     for command in list(commands.values()):
-        parseCommand(command, typeNameRemap, commands)
+        parseCommand(command, typeNameRemap, commands, objects)
         objects[command.name] = command
 
     for feature in list(features.values()):
@@ -965,11 +990,11 @@ def main():
     for extension in list(extensions.values()):
         parseExtenstion(extension, typeNameRemap, enums, structures, commands, constants, objects)
 
-    for object in objects.values():
-        object.inferPlatform()
+    #for object in objects.values():
+    #    object.inferPlatform()
 
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"], vendorFilter=["KHR", "EXT"])
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"], vendorFilter=[])#["KHR", "EXT", "NV", "AMD"])
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!")

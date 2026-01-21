@@ -21946,6 +21946,7 @@ typedef void* <name>MTLSharedEvent_id</name>;
                 <enum offset="3" extends="VkStructureType"                  name="VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT"/>
                 <enum offset="4" extends="VkStructureType"                  name="VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT"/>
                 <enum offset="0" extends="VkObjectType"                     name="VK_OBJECT_TYPE_DEBUG_UTILS_MESSENGER_EXT"/>
+                <type name="VkDebugReportObjectTypeEXT"/>
                 <type name="PFN_vkDebugUtilsMessengerCallbackEXT"/>
                 <type name="VkDebugUtilsLabelEXT"/>
                 <type name="VkDebugUtilsMessageSeverityFlagBitsEXT"/>
