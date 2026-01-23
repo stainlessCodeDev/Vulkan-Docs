@@ -153,11 +153,11 @@ class StructMember(BaseObject):
 
 @dataclass
 class Struct(BaseObject):
-    members: dict[str, StructMember] = field(default_factory=dict[str, StructMember], init=False)
+    members: list[StructMember] = field(default_factory=list[StructMember], init=False)
     isUnion: bool = field(default=False, init=False)
 
     def __iter__(self):
-        for member in self.members.values():
+        for member in self.members:
             yield member
 
     def toDecl(self, genOpts):
@@ -452,12 +452,12 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
         if "category" in typeNode.attrib:
             match typeNode.attrib["category"]:
                 case "basetype":
-                    alias = Typedef()
+                    alias = Typealias()
                     alias.name = nameNode.text
                     alias.apis = apis
                     alias.node = typeNode
 
-                    typedefs[alias.name] = alias
+                    typealiases[alias.name] = alias
                     typeNameRemap[nameNode.text] = nameNode.text
 
                 case "bitmask":
@@ -613,7 +613,7 @@ def parseStruct(structure: Struct, typeNameRemap, objects):
             member.apis = memberNode.attrib["api"].split(",")
 
         parseVarDecl(memberNode, typeNameRemap, member, objects)
-        structure.members[member.name] = member
+        structure.members.append(member)
         member.users.append(structure)
 
 def parseFuncPtr(funcPtr, typeNameRemap, objects):
@@ -994,7 +994,9 @@ def main():
     #    object.inferPlatform()
 
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"], vendorFilter=[])#["KHR", "EXT", "NV", "AMD"])
+        #vendorFilter=["KHR", "EXT", "NV", "AMD"])
+        #nameFilter=["video", "_SPEC_VERSION"]
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=["video", "_SPEC_VERSION"], vendorFilter=[])
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!")
