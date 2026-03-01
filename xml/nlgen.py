@@ -483,6 +483,8 @@ def fetchTypes(typesNode: etree.Element, typeNameRemap, typealiases, typedefs, s
                         typeNameRemap[nameAttrib] = nameAttrib
 
                 case "funcpointer":
+                    nameNode = typeNode.find("proto/name")
+
                     funcPtr = Funcptr()
                     funcPtr.name = nameNode.text
                     funcPtr.node = typeNode
@@ -617,72 +619,13 @@ def parseStruct(structure: Struct, typeNameRemap, objects):
         member.users.append(structure)
 
 def parseFuncPtr(funcPtr, typeNameRemap, objects):
-    state = "return"
-    returnType = ""
-    arguments = []
-    argument = CommandArgument()
-    argument.name = ""
-    argument.type = ""
-
-    for tok in tokenizeDecl(funcPtr.node):
-        if state == "return":
-            if tok.kind == Tok.COMMA:
-                break
-            elif tok.kind == Tok.LPAREN:
-                state = "funcptr"
-                continue
-            elif tok.kind == Tok.KEYWORD:
-                continue
-            elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                returnType = " ".join([returnType, typeNameRemap[tok.value]]).strip()
-                if typeNameRemap[tok.value] in objects:
-                    objects[typeNameRemap[tok.value]].users.append(argument)
-                continue
-            elif tok.kind == "enum":
-                returnType = " ".join([returnType, tok.value]).strip()
-                continue
-            else:
-                returnType = " ".join([returnType, tok.value]).strip()
-                continue
-        elif state == "funcptr":
-            if tok.kind == "name":
-                funcPtr.name = tok.value
-            elif tok.kind == Tok.LPAREN:
-                state = "arguments"
-                continue
-            else:
-                continue
-        elif state == "arguments":
-            if tok.kind in [Tok.COMMA, Tok.SEMICOLON]:
-                arguments.append(argument)
-                argument.users.append(funcPtr)
-
-                argument = CommandArgument()
-                argument.name = ""
-                argument.type = ""
-            elif tok.kind == Tok.KEYWORD:
-                continue
-            elif tok.kind == "type" or tok.kind == Tok.IDENT and tok.value in typeNameRemap:
-                argument.type = " ".join([argument.type, typeNameRemap[tok.value]]).strip()
-                if typeNameRemap[tok.value] in objects:
-                    objects[typeNameRemap[tok.value]].users.append(argument)
-                continue
-            elif tok.kind == "enum":
-                argument.type = " ".join([argument.type, tok.value]).strip()
-                continue
-            elif tok.kind == Tok.IDENT:
-                argument.name = tok.value
-                continue
-            elif tok.kind in [Tok.STAR]:
-                argument.type = " ".join([argument.type, tok.value]).strip()
-                continue
-            else:
-                continue
-
-    assert argument.type == ""
-    assert argument.name == ""
-    funcPtr.arguments = arguments
-    funcPtr.type = returnType
+    for node in funcPtr.node:
+        if node.tag == "proto":
+            parseVarDecl(node, typeNameRemap, funcPtr, objects)
+        elif node.tag == "param":
+            argument = CommandArgument()
+            parseVarDecl(node, typeNameRemap, argument, objects)
+            funcPtr.arguments.append(argument)
 
 def parseEnum(enum, typeNameRemap, enums, constants, typedefs):
     kind = enum.node.attrib["type"]
@@ -758,18 +701,22 @@ def parseEnumExtension(itemNode, extendsEnum, name, typeNameRemap, constants, ex
 
     enumValue = EnumMember()
     enumValue.name = name
+    dir = ""
+
+    if "dir" in itemNode.attrib:
+        dir = "-"
 
     if "bitpos" in itemNode.attrib:
-        enumValue.value = "1 << {}".format(itemNode.attrib["bitpos"])
+        enumValue.value = dir + "1 << {}".format(itemNode.attrib["bitpos"])
     elif "value" in itemNode.attrib:
         enumValue.value = itemNode.attrib["value"]
     elif "alias" in itemNode.attrib:
         enumValue.value = itemNode.attrib["alias"]
     elif "extnumber" in itemNode.attrib:
         extNumber = int(itemNode.attrib["extnumber"]) # Why is it -1???
-        enumValue.value = str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
+        enumValue.value = dir + str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
     elif "offset" in itemNode.attrib and extNumber:
-        enumValue.value = str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
+        enumValue.value = dir + str((1000000 + extNumber - 1) * 1000 + int(itemNode.attrib["offset"]))
     else:
         return constants[name]
 
