@@ -249,7 +249,7 @@ class Command(BaseObject):
             newLine = "\n"
             indent = "    "
 
-        if self.category in ["instance", "physicalDevice"]:
+        if self.category in ["instance", "physicalDevice", "instance_extension"]:
             return f"{indent}{self.name} = cast(void*) vkGetInstanceProcAddr(instance, \"{self.name}\");{newLine}" if instance or instance is None else ""
         else:
             return f"{indent}table.{self.name} = cast(void*) vkGetDeviceProcAddr(device, \"{self.name}\");{newLine}" if not instance or instance is None else ""
@@ -564,6 +564,8 @@ def fetchExtensions(extensionsNode, typeNameRemap, extensions):
         extension.name = extensionNode.attrib["name"]
         extension.number = int(extensionNode.attrib["number"])
         extension.node = extensionNode
+        extension.vendor = re.match("VK_([A-Z]+)_", extension.name).groups()[0]
+        assert(extension.vendor != None)
 
         if "type" in extensionNode.attrib:
             extension.kind = extensionNode.attrib["type"]
@@ -573,9 +575,6 @@ def fetchExtensions(extensionsNode, typeNameRemap, extensions):
 
         if "supported" in extensionNode.attrib:
             extension.apis = extensionNode.attrib["supported"].split(",")
-
-        if "author" in extensionNode.attrib:
-            extension.vendor = extensionNode.attrib["author"]
 
         extensions[extension.name] = extension
 
@@ -829,17 +828,18 @@ def main():
     treeRoot = etree.parse("vk.xml")
     registryNode = treeRoot.getroot()
 
+    vendorList = ["", "KHR", "EXT", "NV", "NVX"] # parse the <tags> tag to ge all of the vendors
     #supportedPlatforms = ["Core", "win32", "xlib", "xlib_xrandr", "xcb", "android"]
     supportedPlatforms = ["Core", "win32"]
-    vendors=["KHR", "EXT", "NV", "AMD"]
+    vendorFilter=["KHR", "EXT"]
 
     parser = argparse.ArgumentParser(description="Language Test Runner")
     parser.add_argument("-platforms", nargs="*", default=["Core", "win32"], type=str, help="List of platform bindings to emit")
-    parser.add_argument("-vendors", nargs="*", default=["KHR", "EXT"], type=str, help="List of vendor specific apis to emit")
+    parser.add_argument("-vendors", nargs="*", default=[], type=str, help="List of vendor specific apis to emit")
     args = parser.parse_args()
 
     supportedPlatforms = args.platforms
-    vendors = args.vendors
+    vendorFilter = args.vendors
 
     #TODO: Detect if the platform is defined in the xml
     # and grab the protect attribute for all of them if we actually need it
@@ -932,7 +932,7 @@ def main():
 
     nameFilter=["video", "_SPEC_VERSION"]
     for platform in supportedPlatforms:
-        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=nameFilter, vendorFilter=vendors)
+        genOpts = GenOpts(api="vulkan", platform=platform, supportedPlatforms=supportedPlatforms, nameFilter=nameFilter, vendorFilter=vendorFilter)
         generateDefsForPlatform(genOpts, typealiases, typedefs, constants, structures, enums, funcPtrs, commands, extensions, objects)
 
     print("Generated vulkan module successfully!")
